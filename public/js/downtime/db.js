@@ -145,6 +145,23 @@ export function cycleDisplayName(cycle) {
 }
 
 /**
+ * #1002: derive a cycle's feeds-into span. Downtimes are collected after game N
+ * and consumed at the following session, so a cycle for game N feeds game N+1.
+ * Derived from game_number - never stored. Empty string when game_number is unknown.
+ *   cycleSpanLabel  → "Downtime after Game 5, feeds Game 6"  (full, for chips/headers)
+ *   cycleFeedsLabel → "feeds Game 6"                          (short, for pickers/copy)
+ */
+export function cycleSpanLabel(cycle) {
+  const n = cycle?.game_number;
+  return n == null ? '' : `Downtime after Game ${n}, feeds Game ${n + 1}`;
+}
+
+export function cycleFeedsLabel(cycle) {
+  const n = cycle?.game_number;
+  return n == null ? '' : `feeds Game ${n + 1}`;
+}
+
+/**
  * #1003 flip guard: deciding whether flipping `targetCycle` to game phase should
  * warn the ST. Fires only when the target has zero downtime submissions AND another
  * non-closed cycle has some — the 2026-07-16 mistake was flipping empty "Game 6"

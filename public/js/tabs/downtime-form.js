@@ -31,7 +31,8 @@ import { FAMILIES, kindByCode } from '../data/relationship-kinds.js';
 import { charPicker, setCharPickerSources } from '../components/character-picker.js';
 import { isMinimalComplete, missingMinimumPieces } from '../data/dt-completeness.js';
 // #1001: canonical in-game-phase test (game_phase wins over legacy status)
-import { isInGamePhase } from '../downtime/db.js';
+// #1002: cycleSpanLabel - which session this downtime feeds (derived)
+import { isInGamePhase, cycleSpanLabel, cycleFeedsLabel } from '../downtime/db.js';
 // ECM-4 (#871): catalogue dropdown sources from the shared cache module
 // ECM-5 (#872) introduced. App boot in app.js calls loadCatalogue; we read
 // synchronously here at render time. getCatalogueEntry resolves a
@@ -1735,6 +1736,9 @@ function renderCycleGatePage() {
 
   let h = `<div class="reading-pane qf-gate-page">`;
   h += `<h3 class="qf-title">${label}</h3>`;
+  // #1002: which game session this downtime feeds (derived from game_number)
+  const _spanGate = cycleSpanLabel(currentCycle);
+  if (_spanGate) h += `<p class="qf-section-intro">${esc(_spanGate)}</p>`;
 
   if (isPrep) {
     const _openAt = currentCycle.auto_open_at ? new Date(currentCycle.auto_open_at) : null;
@@ -2098,7 +2102,10 @@ function renderForm(container) {
   h += '<div class="qf-header">';
   h += `<h3 class="qf-title">Downtime Submission</h3>`;
   if (currentCycle) {
-    h += `<p class="qf-section-intro">${esc(currentCycle.label || currentCycle.title || 'Current Cycle')}</p>`;
+    // #1002: append the feeds-into span so players see which session this feeds
+    const _feeds = cycleFeedsLabel(currentCycle);
+    const _base = esc(currentCycle.label || currentCycle.title || 'Current Cycle');
+    h += `<p class="qf-section-intro">${_feeds ? `${_base} – ${esc(_feeds)}` : _base}</p>`;
     if (currentCycle.deadline_at) {
       const dl = new Date(currentCycle.deadline_at);
       const past = dl < new Date();

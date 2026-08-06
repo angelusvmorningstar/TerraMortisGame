@@ -8,7 +8,7 @@ import { apiGet, apiPost, apiPut, apiDelete } from '../data/api.js';
 // editor's Add Equipment / Add Asset rows pre-fill acquired_cycle correctly.
 import state from '../data/state.js';
 import { parseDowntimeCSV } from '../downtime/parser.js';
-import { getCycles, getActiveCycle, createCycle, updateCycle, closeCycle, openGamePhase, getSubmissionsForCycle, upsertCycle, updateSubmission, mapRawToResponses, signoffPhase, setManualOpen, isInGamePhase, zeroSubmissionFlipWarning, zeroSubmissionFlipMessage, DTUX_PHASES } from '../downtime/db.js';
+import { getCycles, getActiveCycle, createCycle, updateCycle, closeCycle, openGamePhase, getSubmissionsForCycle, upsertCycle, updateSubmission, mapRawToResponses, signoffPhase, setManualOpen, isInGamePhase, zeroSubmissionFlipWarning, zeroSubmissionFlipMessage, cycleFeedsLabel, DTUX_PHASES } from '../downtime/db.js';
 import { TERRITORY_DATA, AMBIENCE_FEEDING_TOLERANCE, AMBIENCE_ENTROPY, AMBIENCE_THRESHOLDS, AMBIENCE_MODS, FEEDING_TERRITORIES, FEED_METHODS as FEED_METHODS_DATA, MAINTENANCE_MERITS, normaliseSorceryTargets } from '../tabs/downtime-data.js';
 import { rollPool, showRollModal, parseDiceString } from '../downtime/roller.js';
 import { getAttrEffective as getAttrVal, getSkillObj, skDots, skTotal, skNineAgain, skSpecs, riteCost, skillAcqPoolStr } from '../data/accessors.js';
@@ -1195,7 +1195,10 @@ async function loadAllCycles() {
   const sel = document.getElementById('dt-cycle-sel');
   sel.innerHTML = '<option value="">\u2014 Select cycle \u2014</option>';
   allCycles.forEach(c => {
-    const label = (c.label || 'Unnamed') + (c.status === 'active' ? ' (active)' : '');
+    const feeds = cycleFeedsLabel(c); // #1002: which session this cycle feeds
+    const label = (c.label || 'Unnamed')
+      + (feeds ? ` – ${feeds}` : '')
+      + (c.status === 'active' ? ' (active)' : '');
     sel.innerHTML += `<option value="${c._id}">${esc(label)}</option>`;
   });
 
@@ -2714,7 +2717,11 @@ async function handleOpenGamePhase() {
   const warn = await zeroSubmissionFlipWarning(
     cycle, allCycles, async id => (await getSubmissionsForCycle(id)).length);
   if (warn && !confirm(zeroSubmissionFlipMessage(warn))) return;
-  if (!confirm(`Open game phase for "${cycle.label || 'Unnamed'}"? Players will be able to run their feeding rolls.`)) return;
+  // #1002: state which session these submissions feed so the right cycle is opened.
+  const feeds = cycleFeedsLabel(cycle);
+  const openMsg = `Open game phase for "${cycle.label || 'Unnamed'}"${feeds ? ` (${feeds})` : ''}? `
+    + `Players will run their feeding rolls against the downtimes submitted in this cycle.`;
+  if (!confirm(openMsg)) return;
   await openGamePhase(selectedCycleId);
   const idx = allCycles.findIndex(c => c._id === selectedCycleId);
   if (idx >= 0) allCycles[idx].status = 'game';

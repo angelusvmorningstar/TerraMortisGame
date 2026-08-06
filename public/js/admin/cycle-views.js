@@ -1,5 +1,5 @@
 import { apiGet, apiPost, apiDelete, apiPut } from '../data/api.js';
-import { createCycle, updateCycle, deleteCycle, deriveCycleStatus, getSubmissionsForCycle, zeroSubmissionFlipWarning, zeroSubmissionFlipMessage } from '../downtime/db.js';
+import { createCycle, updateCycle, deleteCycle, deriveCycleStatus, getSubmissionsForCycle, zeroSubmissionFlipWarning, zeroSubmissionFlipMessage, cycleSpanLabel, cycleFeedsLabel } from '../downtime/db.js';
 
 const PHASE_LABELS = {
   game:       'Game',
@@ -94,6 +94,7 @@ function renderRibbon() {
     <div class="cy-ribbon-item">
       <span class="cy-ribbon-label">Game Cycle</span>
       <span class="cy-ribbon-val">${esc(cy.label || String(cy._id))}</span>
+      ${cycleSpanLabel(cy) ? `<span class="derived-note">${esc(cycleSpanLabel(cy))}</span>` : ''}
     </div>
     <div class="cy-ribbon-item">
       <span class="cy-ribbon-label">Phase</span>
@@ -233,7 +234,13 @@ async function writePhase(cy, phaseOrNull) {
     const warn = await zeroSubmissionFlipWarning(
       cy, view.cycles || [], async id => (await getSubmissionsForCycle(id)).length);
     if (warn && !confirm(zeroSubmissionFlipMessage(warn))) return false;
-    if (!confirm('Setting to Game phase will reset the live tracker (all characters reload with default states). Continue?')) return false;
+    // #1002: state what the flip means - it opens session play for THIS cycle's
+    // submissions, which feed the following game.
+    const feeds = cycleFeedsLabel(cy);
+    const meaning = feeds
+      ? `This opens session play for the downtimes submitted in this cycle (${feeds}) and resets the live tracker (all characters reload with default states). Continue?`
+      : 'Setting to Game phase will reset the live tracker (all characters reload with default states). Continue?';
+    if (!confirm(meaning)) return false;
     try {
       await apiDelete('/api/tracker_state');
     } catch (err) {
@@ -531,6 +538,15 @@ function buildLabelCell(cy) {
     inner.appendChild(span);
     inner.appendChild(editBtn);
     td.appendChild(inner);
+    // #1002: derived feeds-into span so the cycle name can't be mistaken for the
+    // session it actually feeds.
+    const spanText = cycleSpanLabel(cy);
+    if (spanText) {
+      const note = document.createElement('span');
+      note.className = 'derived-note';
+      note.textContent = spanText;
+      td.appendChild(note);
+    }
   }
 
   function renderEdit() {
