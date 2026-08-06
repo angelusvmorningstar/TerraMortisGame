@@ -11,7 +11,7 @@
 
 import { apiGet, apiPost, apiPut, apiPatch } from '../data/api.js';
 import { saveDraft as saveLocalDraft, loadDraft as loadLocalDraft, clearDraft as clearLocalDraft, pickFreshestDraft } from './draft-persist.js';
-import { esc, displayName, parseOutcomeSections, redactPlayer, redactCharName, hasAoE, isSpecs, findRegentTerritory } from '../data/helpers.js';
+import { esc, displayName, parseOutcomeSections, redactPlayer, redactCharName, hasAoE, isSpecs, findRegentTerritory, terrSlugFromId } from '../data/helpers.js';
 import { applyDerivedMerits } from '../editor/mci.js';
 import { DOWNTIME_SECTIONS, DOWNTIME_GATES, SPHERE_ACTIONS, TERRITORY_DATA, FEEDING_TERRITORIES, PROJECT_ACTIONS, FEED_METHODS, MAINTENANCE_MERITS, FEED_VIOLENCE_DEFAULTS, ACTION_DESCRIPTIONS, ACTION_APPROACH_PROMPTS, SUBMIT_FINAL_MODAL_QUESTIONS } from './downtime-data.js';
 import { actionSpentSummary, formatActionSpentSummary } from '../data/dt-action-summary.js';
@@ -146,15 +146,12 @@ function _terrOidForName(name) {
   return t?._id ? String(t._id) : null;
 }
 
-// Issue #496 / #816: the REVERSE of _buildTerritoryOidMap. collectResponses()
-// remaps territory slugs to OIDs at the save boundary, so any renderer or
-// click handler that compares a saved value against TERRITORY_DATA's `slug`
-// must normalise first — otherwise it compares an OID to a slug and silently
-// never matches. Pass-through for values that are already slugs (or unknown).
+// Issue #816: thin binding over the canonical helper in data/helpers.js, which
+// owns the OID-to-slug boundary. Exists only to close over the module-local
+// `_territories` so call sites stay a single argument. Do not reimplement the
+// 24-hex sniff here or anywhere else — add a call site instead.
 function _terrSlugFromSaved(val) {
-  if (!val || !/^[a-f0-9]{24}$/i.test(String(val))) return val || '';
-  const t = (_territories || []).find(t => String(t._id) === String(val));
-  return t?.slug || val;
+  return terrSlugFromId(_territories, val);
 }
 
 function _terrGridVal(grid, displayName, legacyKey) {
@@ -6149,14 +6146,10 @@ function renderTargetCharOrOther(n, savedType, savedCharId, savedTerrId, savedOt
  *  Uses the canonical .dt-chip-grid / .dt-chip styling so target-zone territory chips
  *  match the character roster visually. */
 function renderTerritoryPills(fieldId, savedVal) {
-  // 496.2: savedVal may be an ObjectId string (new format) or a short slug
-  // (legacy). Normalise to slug for the pill-match check. The hidden input
+  // 496.2 / #816: savedVal may be an ObjectId string (new format) or a short
+  // slug (legacy). Normalise to slug for the pill-match check. The hidden input
   // keeps the saved value as-is so collectResponses() can remap on next save.
-  let pillMatchSlug = savedVal;
-  if (savedVal && /^[a-f0-9]{24}$/i.test(savedVal)) {
-    const td = (_territories || []).find(t => String(t._id) === savedVal);
-    if (td?.slug) pillMatchSlug = td.slug;
-  }
+  const pillMatchSlug = _terrSlugFromSaved(savedVal);
   let h = `<div class="dt-chip-grid" data-terr-single="${fieldId}">`;
   for (const t of TERRITORY_DATA) {
     const selected = pillMatchSlug === t.slug ? ' dt-chip--selected' : '';

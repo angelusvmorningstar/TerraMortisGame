@@ -296,6 +296,34 @@ export function resolveSharedWithMember(chars, entry) {
 }
 
 /**
+ * Issue #816 / #496: canonical OID-to-slug boundary for territories.
+ *
+ * Territory values are persisted as ObjectId strings (`collectResponses()`
+ * remaps at the save boundary), but `TERRITORY_DATA` and every `data-*`
+ * attribute in the DT form carry short SLUGS. Any renderer or click handler
+ * that compares a saved value against a slug must normalise first, or it
+ * compares an OID to a slug and silently never matches — which is exactly
+ * how the Ambience arrows lost their selection on every render after the
+ * first collect (fixed 2026-07-30).
+ *
+ * Pass-through for values that are already slugs, empty, or unknown, so it is
+ * safe to call on any territory field regardless of vintage.
+ *
+ * Territories are INJECTED rather than imported, per the ADR-006 D1
+ * convention — this module stays pure and testable, and callers own the
+ * lookup source.
+ *
+ * @param {Array} territories - the live territories list (objects with _id + slug)
+ * @param {string} val - an ObjectId string, a slug, or ''
+ * @returns {string} the matching slug, or `val` unchanged
+ */
+export function terrSlugFromId(territories, val) {
+  if (!val || !/^[a-f0-9]{24}$/i.test(String(val))) return val || '';
+  const t = (territories || []).find(x => String(x?._id) === String(val));
+  return t?.slug || val;
+}
+
+/**
  * Parse a published downtime outcome string (## Section headings format)
  * into an array of { heading, body } objects for rendering.
  * If no ## headings found, returns a single entry with heading=null.
