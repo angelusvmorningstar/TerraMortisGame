@@ -65,8 +65,11 @@ describe('#836 — data/loader.js drops generic tracker helpers', () => {
   });
 });
 
-describe('#836 — suite/tracker.js gutted to just `toast`', () => {
-  const src = read('public/js/suite/tracker.js');
+// #836 gutted suite/tracker.js down to its single live export and the survivor
+// landed as suite/toast.js. This block still asserts the gutting held; only the
+// path moved. It had been reading the deleted path and failing since #836.
+describe('#836 — suite/tracker.js gutted to just `toast` (now suite/toast.js)', () => {
+  const src = read('public/js/suite/toast.js');
   it('no longer exports the deprecated st* helpers', () => {
     const deprecated = [
       'stGetTracker', 'stSetTracker', 'stGetDt', 'stSetDt',
@@ -106,7 +109,7 @@ describe('#836 — no live writers remain for legacy keys', () => {
   const LIVE_FILES = [
     'public/js/admin.js',
     'public/js/data/loader.js',
-    'public/js/suite/tracker.js',
+    'public/js/suite/toast.js',
     'public/js/data/accessors.js',
     'public/js/editor/edit.js',
     'public/js/editor/identity.js',
@@ -114,7 +117,6 @@ describe('#836 — no live writers remain for legacy keys', () => {
     'public/js/editor/xp.js',
     'public/js/game/tracker.js',
     'public/js/tabs/feeding-tab.js',
-    'public/js/tabs/wizard.js',
     'public/js/suite/import.js',
   ];
 

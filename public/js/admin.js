@@ -8,12 +8,17 @@ import { initAdminArchive } from './admin/archive-admin.js';
 import { sanitiseChar, loadRulesFromApi } from './data/loader.js';
 import { downloadCSV } from './editor/export.js';
 import { esc, clanIcon, covIcon, shortCov, cardName, displayName, sortName, redactPlayer, discordAvatarUrl, findRegentTerritory, isRedactMode } from './data/helpers.js';
-import { setStatusTerritories, calcWillpowerMax, calcVitaeMax } from './data/accessors.js';
+import { setStatusTerritories } from './data/accessors.js';
 import { ensureLoaded as loadTrackerState } from './game/tracker.js';
-import { loadStMods, applyStMods, spliceCurrent, stripOverlay, applyOverlayToAll } from './data/st-mods.js';
+// ADR-009 D1: loadStMods / applyStMods / spliceCurrent / stripOverlay moved to
+// data/sheet-composition.js with the sequence that used them. admin.js keeps
+// only applyOverlayToAll, which refreshCharacterOverlay still calls directly
+// until step 2 converges that function too.
+import { applyOverlayToAll } from './data/st-mods.js';
 // Issue #879 (ADR-006 D4): materialise c.derived.defence between calcDefence and
 // applyStMods so STM overlay composes on top of the armour-adjusted base.
 import { materialiseDerivedDefence } from './data/equipment-derivation.js';
+import { renderSheetWithOverlay as composeAndRenderSheet, refreshCharacterOverlay as sharedRefreshOverlay } from './data/sheet-composition.js';
 import { loadGlobalSettings, getGlobalSettings } from './data/app-settings.js';
 import { installStModPopover } from './editor/st-mod-popover.js';
 import { initWS } from './data/ws.js';
@@ -124,37 +129,16 @@ registerAttrsCallbacks(markDirty);
 // sees canonical base values; this also defends against the silent
 // fresh-fetch failure path in cd-edit-toggle leaving modded canonical
 // fields visible.
-async function renderSheetWithOverlay(c) {
-  if (!c) return;
-
-  if (editorState.editMode) {
-    stripOverlay(c);
-    // Issue #879 (ADR-006 D4): re-materialise armour-adjusted defence
-    // after strip so the edit-mode view shows the canonical mechanical
-    // base (calcDefence - armourPenalty), not a stale STM-modded value.
-    materialiseDerivedDefence(c);
-    renderSheet(c);
-    return;
-  }
-
-  const tracker = await loadTrackerState(c).catch(() => null);
-  spliceCurrent(c, tracker, { calcWillpowerMax, calcVitaeMax });
-
-  // Issue #879 (ADR-006 D3 + D4): composition order is
-  //   calcDefence(c) → subtract armourDefencePenalty(c) → floor → applyStMods.
-  // materialiseDerivedDefence handles the first three steps and writes the
-  // result to c.derived.defence. applyStMods then reads c.derived.defence
-  // as the base for any 'derived.defence' mod and composes additively on
-  // top, fixing the pre-existing ADR-004 D5 display bug where the marker
-  // appeared but the value didn't update.
-  materialiseDerivedDefence(c);
-
-  const mods = await loadStMods(c._id);
-  const settings = getGlobalSettings();
-  const overlayEnabled = (settings?.st_mods_enabled !== false) && !c.st_mods_suppressed;
-  applyStMods(c, mods, overlayEnabled);
-
-  renderSheet(c);
+// ADR-009 D1/D4 step 1: the composition sequence now lives in
+// data/sheet-composition.js. This wrapper preserves admin.js's exact behaviour
+// -- it supplies the tracker loader unconditionally, which is what admin.html
+// did before, because every admin.html session is an authenticated ST and so
+// may always read tracker_state (ADR-009 D3).
+//
+// app.js's equivalent is converged onto the same module in step 2; until then
+// the two callers differ only in what they inject, not in what they compute.
+function renderSheetWithOverlay(c) {
+  return composeAndRenderSheet(c, { renderSheet, loadTrackerState });
 }
 
 // Re-apply the overlay for a single character (by id) and, if it's the
@@ -162,17 +146,19 @@ async function renderSheetWithOverlay(c) {
 // and the sheet's own audited apply-bonus affordance (STM-14, issue #1034 —
 // installStModPopover's onMutate callback) so both paths route through the
 // same composition sequence (single composition site, ADR-004 §D1/§D8).
-async function refreshCharacterOverlay(charId) {
-  const target = chars.find(c => String(c._id) === String(charId));
-  if (!target) return;
-  // Issue #879 (ADR-006 D4): re-materialise before re-applying so the
-  // armour-adjusted base is current at composition time.
-  materialiseDerivedDefence(target);
-  await applyOverlayToAll([target], getGlobalSettings()?.st_mods_enabled !== false);
-  const idx = editorState.editIdx;
-  if (idx != null && idx >= 0 && chars[idx] === target) {
-    renderSheetWithOverlay(target);
-  }
+// ADR-009 D1 step 2: sequence lives in data/sheet-composition.js. admin.js
+// supplies its own char array and its own "is this sheet open" predicate; the
+// composition itself is no longer duplicated here.
+function refreshCharacterOverlay(charId) {
+  return sharedRefreshOverlay(charId, {
+    getChars: () => chars,
+    renderIfOpen: (target) => {
+      const idx = editorState.editIdx;
+      if (idx != null && idx >= 0 && chars[idx] === target) {
+        renderSheetWithOverlay(target);
+      }
+    },
+  });
 }
 
 // ── Auth gate ──

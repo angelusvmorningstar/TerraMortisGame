@@ -1,0 +1,105 @@
+/* admin-rule-data.css — ST-only surface sheet
+ *
+ * Extracted verbatim from admin-layout.css (#1064 Wave 2). No declaration
+ * edited. Bucketed by EMITTER, not by prefix: only admin/rules-view.js emits these classes.
+ * Classes it shares with other modules (.dt-btn, .placeholder-msg) are NOT
+ * here -- they live in admin-shared.css and suite.css respectively.
+ */
+
+/* ── Rules domain ── */
+.rules-filters { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+.rules-cat-btn { padding: 5px 12px; border: 1px solid var(--bdr, rgba(201,169,98,.2)); border-radius: 14px; background: var(--surf, #1A1714); color: var(--txt2, #aaa); font-size: 12px; cursor: pointer; font-family: var(--fl); }
+.rules-cat-btn:hover { background: var(--surf2, #252119); }
+.rules-cat-btn.rules-cat-active { background: var(--accent); color: var(--txt-on-dark); border-color: var(--accent); }
+.rules-search-row { display: flex; align-items: center; gap: 12px; margin-bottom: 14px; }
+.rules-search-wrap { flex: 1; position: relative; }
+.rules-search { width: 100%; box-sizing: border-box; padding: 8px 32px 8px 12px; background: var(--surf, #1A1714); border: 1px solid var(--bdr, rgba(201,169,98,.2)); border-radius: 4px; color: var(--txt1, #E8E0D0); font-size: 13px; font-family: inherit; }
+.rules-search:focus { border-color: var(--accent); outline: none; }
+.rules-search-clear { position: absolute; right: 6px; top: 50%; transform: translateY(-50%); background: none; border: none; color: var(--txt3, #777); font-size: 14px; cursor: pointer; padding: 2px 6px; line-height: 1; }
+.rules-search-clear:hover { color: var(--txt1, #E8E0D0); }
+.rules-result-count { font-size: 12px; color: var(--txt2, #aaa); white-space: nowrap; }
+.rules-add-btn { font-size: 12px; padding: 6px 14px; white-space: nowrap; }
+
+/* Table */
+.rules-tbl-wrap { overflow-x: auto; margin-bottom: 12px; }
+.rules-tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
+.rules-tbl thead { position: sticky; top: 0; z-index: 1; }
+.rules-tbl th { text-align: left; padding: 8px 10px; background: var(--surf2, #252119); color: var(--accent); font-family: var(--fl); font-size: 11px; text-transform: uppercase; letter-spacing: .5px; border-bottom: 1px solid var(--bdr, rgba(201,169,98,.2)); white-space: nowrap; }
+.rules-th-sort { cursor: pointer; user-select: none; }
+.rules-th-sort:hover { color: var(--txt1, #E8E0D0); }
+.rules-tbl td { padding: 7px 10px; border-bottom: 1px solid rgba(201,169,98,.06); vertical-align: middle; }
+.rules-tbl tbody tr:nth-child(even) { background: rgba(201,169,98,.02); }
+.rules-tbl tbody tr:hover { background: rgba(201,169,98,.06); }
+.rules-td-name { font-family: var(--fl); color: var(--txt1); white-space: nowrap; }
+.rules-td-dim { color: var(--txt2, #aaa); font-size: 12px; }
+.rules-td-dots { color: var(--accent); font-size: 11px; letter-spacing: 1px; white-space: nowrap; }
+.rules-td-prereq { font-size: 11px; color: var(--txt3, #777); max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rules-td-held { font-family: var(--fl); font-size: 12px; color: var(--txt2); text-align: center; cursor: help; min-width: 56px; }
+.rules-td-held:empty { color: var(--txt3); }
+.rules-th-held { cursor: help; }
+.rules-td-empty { text-align: center; color: var(--txt3); padding: 24px; }
+.rules-cat-tag { font-size: 10px; text-transform: uppercase; letter-spacing: .5px; padding: 1px 6px; border-radius: 3px; background: var(--accent-a8); color: var(--accent); }
+.rules-edit-btn { background: none; border: none; color: var(--txt3, #777); font-size: 16px; cursor: pointer; padding: 2px 6px; line-height: 1; }
+.rules-edit-btn:hover { color: var(--accent); }
+.rules-del-btn { background: none; border: none; color: var(--txt3, #777); font-size: 14px; cursor: pointer; padding: 2px 6px; line-height: 1; margin-left: 2px; }
+.rules-del-btn:hover { color: var(--crim); }
+
+/* Pagination */
+.rules-pag { display: flex; align-items: center; justify-content: center; gap: 12px; padding: 10px 0; font-size: 13px; }
+.rules-pag-btn { padding: 5px 12px; border: 1px solid var(--bdr, rgba(201,169,98,.2)); border-radius: 4px; background: var(--surf, #1A1714); color: var(--txt2, #aaa); cursor: pointer; font-size: 12px; }
+.rules-pag-btn:hover:not(:disabled) { background: var(--surf2); color: var(--txt1); }
+.rules-pag-btn:disabled { opacity: .35; cursor: default; }
+.rules-pag-info { color: var(--txt2); font-size: 12px; }
+.rules-pag-size { padding: 4px 8px; background: var(--surf, #1A1714); border: 1px solid var(--bdr, rgba(201,169,98,.2)); border-radius: 4px; color: var(--txt1); font-size: 12px; }
+
+/* Modal overlay + dialog */
+.rules-modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,.65); display: flex; align-items: center; justify-content: center; z-index: 9000; }
+.rules-modal-dialog { background: var(--surf); border: 1px solid var(--bdr, rgba(201,169,98,.25)); border-radius: 8px; width: 700px; max-width: 96vw; max-height: 88vh; overflow-y: auto; display: flex; flex-direction: column; }
+.rules-modal-header { padding: 16px 20px 12px; font-family: var(--fl); font-size: 16px; color: var(--accent); border-bottom: 1px solid var(--bdr); }
+.rules-modal-body { padding: 16px 20px; display: flex; flex-direction: column; gap: 10px; }
+.rules-modal-footer { padding: 12px 20px; border-top: 1px solid var(--bdr); display: flex; align-items: center; gap: 10px; justify-content: flex-end; }
+.rules-modal-status { font-size: 12px; color: var(--txt2); margin-right: auto; }
+
+/* Modal read-only */
+.rules-modal-ro { display: flex; gap: 20px; padding: 8px 0; margin-bottom: 4px; }
+.rules-modal-ro-field { font-size: 12px; }
+.rules-modal-ro-label { color: var(--txt3, #777); }
+.rules-modal-ro-value { color: var(--txt1); font-family: var(--fl); margin-left: 4px; }
+
+/* Modal fields */
+.rules-modal-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.rules-modal-field { display: flex; flex-direction: column; gap: 3px; }
+.rules-modal-rr { grid-column: 1 / -1; }
+.rules-modal-label { font-size: 11px; color: var(--accent); font-family: var(--fl); }
+.rules-modal-input { width: 100%; box-sizing: border-box; padding: 7px 10px; background: var(--surf, #1A1714); color: var(--txt1); border: 1px solid var(--bdr, rgba(201,169,98,.2)); border-radius: 4px; font-family: inherit; font-size: 13px; }
+.rules-modal-input:focus { border-color: var(--accent); outline: none; }
+.rules-modal-num { width: 80px; }
+.rules-modal-mono { font-family: monospace; font-size: 12px; resize: vertical; }
+.rules-modal-hint { font-size: 10px; color: var(--txt3); }
+.rules-rating-inputs { display: flex; align-items: center; gap: 6px; }
+.rules-rating-sep { color: var(--txt3); }
+
+/* Prereq builder */
+.prereq-builder-wrap { grid-column: 1 / -1; }
+.prereq-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
+.prereq-tab { padding: 4px 12px; border: 1px solid var(--bdr, rgba(201,169,98,.2)); border-radius: 4px 4px 0 0; background: var(--surf, #1A1714); color: var(--txt3, #777); font-size: 11px; cursor: pointer; font-family: var(--fl); }
+.prereq-tab:hover { color: var(--txt1); }
+.prereq-tab-active { background: var(--surf2, #252119); color: var(--accent); border-bottom-color: var(--surf2); }
+.prereq-panel { min-height: 40px; }
+.prereq-combinator-row { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; font-size: 12px; }
+.prereq-combo-label { color: var(--txt2); }
+.prereq-combo-sel { width: auto; padding: 4px 8px; font-size: 12px; }
+.prereq-leaves { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
+.prereq-leaf { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+.prereq-type-sel { width: 130px; flex-shrink: 0; padding: 5px 8px; font-size: 12px; }
+.prereq-leaf-name { flex: 1; min-width: 100px; padding: 5px 8px; font-size: 12px; }
+.prereq-leaf-qual { width: 100px; padding: 5px 8px; font-size: 12px; }
+.prereq-rm-btn { background: none; border: none; color: var(--txt3); font-size: 16px; cursor: pointer; padding: 2px 6px; }
+.prereq-rm-btn:hover { color: var(--crim); }
+.prereq-empty { font-size: 12px; color: var(--txt3); font-style: italic; padding: 6px 0; }
+.prereq-add-btn { font-size: 11px; padding: 4px 12px; align-self: flex-start; }
+
+/* Rule Data — table rows use hardcoded dark-mode gold tints; replace on parchment */
+html:not([data-theme="dark"]) .rules-tbl td                        { border-bottom-color: var(--surf3); }
+html:not([data-theme="dark"]) .rules-tbl tbody tr:nth-child(even)  { background: var(--surf2); }
+html:not([data-theme="dark"]) .rules-tbl tbody tr:hover            { background: var(--surf3); }

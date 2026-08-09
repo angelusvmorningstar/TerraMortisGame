@@ -1,0 +1,172 @@
+/* admin-equipment.css — the Equipment Catalogue surface (ST-only)
+ *
+ * Extracted verbatim from admin-layout.css for the shell merge (#1064 Wave 2).
+ * No declaration was edited; the blocks below are byte-identical to their
+ * originals.
+ *
+ * EMITTER SPLIT. The `ec-` prefix is NOT exclusive to this surface, so the
+ * family was bucketed by which module emits each class, not by name:
+ *   - here            : classes only admin/equipment-catalogue-admin.js emits
+ *   - admin-shared.css: .ec-empty, emitted by this module AND admin.js
+ *   - admin-layout.css: .ec-modal-* / .ec-row / .ec-val / .ec-lbl /
+ *                       .ec-close-btn, emitted only by admin.js's own
+ *                       equipment modal, which stays with admin.html
+ *
+ * KNOWN BUG, moved verbatim rather than fixed (#1105 family):
+ *   .ec-btn-danger:hover uses var(--crim-a1), which no stylesheet defines and
+ *   which carries no fallback, so the declaration is dropped and the hover has
+ *   no background today. Every sibling token is --crim-a8/a12/a15/a25/a40/a60,
+ *   so this is a typo. Fixing it here would make the move non-identical and
+ *   introduce a visual change nobody requested; filed separately instead.
+ */
+
+/* ── Equipment Catalogue admin (ECM-6, issue #873) ─────────────────────────── */
+
+.ec-admin { padding: 12px; }
+
+.ec-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: end;
+  margin-bottom: 12px;
+  padding: 10px 12px;
+  background: var(--surf1);
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+}
+.ec-toolbar-field { display: flex; flex-direction: column; gap: 3px; font-size: 0.85em; }
+.ec-toolbar-field > span { color: var(--txt3); letter-spacing: 0.04em; }
+.ec-toolbar-field select,
+.ec-toolbar-field input {
+  padding: 5px 7px;
+  border: 1px solid var(--bdr2);
+  background: var(--surf);
+  color: var(--txt);
+  border-radius: 4px;
+  min-width: 160px;
+}
+
+.ec-btn-sm {
+  padding: 4px 10px;
+  font-size: 0.85em;
+  border: 1px solid var(--bdr2);
+  background: var(--surf1);
+  color: var(--txt);
+  border-radius: 4px;
+  cursor: pointer;
+}
+.ec-btn-sm:hover:not([disabled]) { background: var(--surf2); border-color: var(--bdr3); }
+.ec-btn-sm[disabled] { opacity: 0.4; cursor: not-allowed; }
+.ec-btn-danger { color: var(--crim); border-color: var(--crim2); }
+.ec-btn-danger:hover:not([disabled]) { background: var(--crim-a1); }
+
+.ec-btn-primary {
+  padding: 6px 14px;
+  font-size: 0.95em;
+  border: 1px solid var(--gold2);
+  background: var(--gold);
+  color: var(--txt-on-gold);
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: 500;
+}
+.ec-btn-primary:hover { background: var(--gold2); }
+
+.ec-count { font-size: 0.85em; color: var(--txt3); margin-bottom: 6px; }
+
+.ec-table { width: 100%; border-collapse: collapse; font-size: 0.9em; }
+.ec-table th {
+  text-align: left;
+  padding: 6px 10px;
+  color: var(--txt3);
+  font-weight: 400;
+  border-bottom: 1px solid var(--bdr2);
+  letter-spacing: 0.03em;
+}
+.ec-table td { padding: 6px 10px; border-bottom: 1px solid var(--surf2); }
+.ec-table tbody tr:hover { background: var(--surf1); }
+.ec-row-actions { display: flex; gap: 6px; }
+
+.ec-bucket-tag {
+  display: inline-block;
+  padding: 1px 8px;
+  border-radius: 10px;
+  font-size: 0.8em;
+  background: var(--surf2);
+  color: var(--txt2);
+}
+.ec-bucket-weapon    { background: rgba(139, 0, 0, 0.18); color: var(--crim); }
+.ec-bucket-armour    { background: rgba(70, 90, 120, 0.22); color: var(--txt2); }
+.ec-bucket-equipment { background: rgba(108, 117, 125, 0.22); color: var(--txt2); }
+.ec-bucket-asset     { background: rgba(224, 196, 122, 0.18); color: var(--gold2); }
+
+/* ── Forms ────────────────────────────────────────────────────────────────── */
+
+.ec-form-panel {
+  margin-top: 18px;
+  padding: 14px;
+  background: var(--surf1);
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+}
+.ec-form-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+.ec-form-header h3 { margin: 0; font-size: 1.05em; }
+
+.ec-impact-banner {
+  padding: 10px 12px;
+  margin-bottom: 12px;
+  background: rgba(224, 196, 122, 0.12);
+  border-left: 3px solid var(--gold2);
+  border-radius: 3px;
+  font-size: 0.9em;
+}
+.ec-impact-banner strong { color: var(--gold2); }
+.ec-impact-list { display: block; margin-top: 4px; font-size: 0.85em; color: var(--txt3); }
+
+.ec-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px 14px;
+}
+.ec-form-field { display: flex; flex-direction: column; gap: 3px; font-size: 0.9em; }
+.ec-form-field--wide { grid-column: 1 / -1; }
+.ec-form-field label { color: var(--txt3); font-size: 0.85em; letter-spacing: 0.03em; }
+.ec-form-field input,
+.ec-form-field textarea,
+.ec-form-field select {
+  padding: 6px 8px;
+  border: 1px solid var(--bdr2);
+  background: var(--surf);
+  color: var(--txt);
+  border-radius: 4px;
+  font: inherit;
+}
+.ec-form-hint { color: var(--txt3); font-size: 0.85em; }
+.ec-form-readonly { padding: 6px 8px; color: var(--txt2); }
+
+.ec-bucket-fieldset {
+  margin: 6px 0 0 0;
+  padding: 8px 12px 12px;
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+}
+.ec-bucket-fieldset legend { padding: 0 6px; color: var(--txt3); font-size: 0.85em; }
+.ec-bucket-fieldset .ec-form-field { margin-top: 6px; }
+
+.ec-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+.ec-form-msg { font-size: 0.85em; }
+.ec-form-msg--ok    { color: var(--green2); }
+.ec-form-msg--error { color: var(--crim); }
+.ec-form-msg--info  { color: var(--txt3); }

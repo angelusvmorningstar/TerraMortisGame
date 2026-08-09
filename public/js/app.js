@@ -101,6 +101,7 @@ import { loadDowntimeHoldFlag } from './data/dt-hold-flag.js';
 import { applyDerivedMerits } from './editor/mci.js';
 import { preloadRules } from './editor/rule_engine/load-rules.js';
 import { applyOverlayToAll } from './data/st-mods.js';
+import { renderSheetWithOverlay as composeAndRenderSheet, refreshCharacterOverlay as sharedRefreshOverlay } from './data/sheet-composition.js';
 // Issue #879 (ADR-006 D4): armour-adjusted defence materialised before
 // applyOverlayToAll so STM mods on derived.defence compose on top.
 import { materialiseDerivedDefence } from './data/equipment-derivation.js';
@@ -252,22 +253,26 @@ function updDirtyBadge() {
 // audited apply-bonus affordance (STM-14, issue #1034 — installStModPopover's
 // onMutate callback) so both paths route through the same composition
 // sequence (single composition site, ADR-004 §D1/§D8).
-async function refreshCharacterOverlay(charId) {
-  const target = (suiteState.chars || []).find(c => String(c._id) === String(charId));
-  if (!target) return;
-  // Issue #879 (ADR-006 D4): re-materialise before re-applying so the
-  // armour-adjusted base is current at composition time.
-  materialiseDerivedDefence(target);
-  await applyOverlayToAll([target], getGlobalSettings()?.st_mods_enabled !== false);
-  if (String(suiteState.sheetChar?._id) === String(charId)) {
-    suiteRenderSheet();
-  }
-  // editorRenderSheet only ever renders for STs (openChar gates it on
-  // getRole() === 'st'); mirror that gate here so a player's WS-delivered
-  // update never touches the ST-only editor sheet container.
-  if (getRole() === 'st' && editorState.editIdx >= 0 && String(editorState.chars[editorState.editIdx]?._id) === String(charId)) {
-    editorRenderSheet(target);
-  }
+// ADR-009 D1 step 2: sequence lives in data/sheet-composition.js, shared with
+// admin.js. This file supplies only what genuinely differs -- its char array
+// and its two-sheet render predicate. The getRole() gate stays HERE by design
+// (ADR-009 D2): the shared module must never learn which document it is in.
+function refreshCharacterOverlay(charId) {
+  return sharedRefreshOverlay(charId, {
+    getChars: () => suiteState.chars,
+    renderIfOpen: (target) => {
+      if (String(suiteState.sheetChar?._id) === String(charId)) {
+        suiteRenderSheet();
+      }
+      // editorRenderSheet only ever renders for STs (openChar gates it on
+      // getRole() === 'st'); mirror that gate here so a player's WS-delivered
+      // update never touches the ST-only editor sheet container.
+      if (getRole() === 'st' && editorState.editIdx >= 0 &&
+          String(editorState.chars[editorState.editIdx]?._id) === String(charId)) {
+        editorRenderSheet(target);
+      }
+    },
+  });
 }
 
 // ══════════════════════════════════════════════
@@ -318,7 +323,14 @@ function openChar(idx) {
   if (getRole() === 'st') {
     renderIdentityTab(c);
     renderAttrsTab(c);
-    editorRenderSheet(c);
+    // ADR-009 D3: route the ST editor sheet through the shared composition
+    // site, supplying the tracker loader. Only STs reach this branch, and
+    // tracker_state is ST-auth-only at the API level, so the loader is exactly
+    // as available here as it is in admin.html. This closes the parity gap
+    // where the same ST saw spliced current vitae/willpower/health in
+    // admin.html and canonical values in index.html.
+    // Not awaited, matching admin.js's openCharDetail.
+    composeAndRenderSheet(c, { renderSheet: editorRenderSheet, loadTrackerState: ensureTrackerLoaded });
   }
   suiteState.sheetChar = c;
   document.getElementById('sh-empty').style.display = 'none';
@@ -597,6 +609,12 @@ function goTab(t) {
   }
   if (t === 'spheres') initSpheresSurface(document.getElementById('t-spheres'));
   if (t === 'tickets') initTicketsSurface(document.getElementById('t-tickets'));
+  if (t === 'players') initPlayersSurface(document.getElementById('t-players'));
+  if (t === 'equipment') initEquipmentSurface(document.getElementById('t-equipment'));
+  if (t === 'attendance') initAttendanceSurface(document.getElementById('t-attendance'));
+  if (t === 'st-mods') initStModsSurface(document.getElementById('t-st-mods'));
+  if (t === 'rule-data') initRuleDataSurface(document.getElementById('t-rule-data'));
+  if (t === 'rules-engine') initRulesEngineSurface(document.getElementById('t-rules-engine'));
   if (t === 'devlog') {
     const el = document.getElementById('t-devlog');
     if (el) renderDevlogTab(el);
@@ -673,6 +691,199 @@ async function initSpheresSurface(el) {
     // destroy #spheres-content and a retry could then never find it.
     const target = el.querySelector('#spheres-content') || el;
     target.innerHTML = '<p class="placeholder-msg">Spheres failed to load. Reload the page or check your connection.</p>';
+  }
+}
+
+// ST Rule Data + Rules Engine (#1064 Wave 2). Two separate sidebar screens.
+//
+// NAMING TRAP: the module names are inverted relative to the labels they
+// serve. Sidebar "Rule Data" (domain `rules`) is admin/rules-view.js; sidebar
+// "Rules Engine" (domain `rde`) is admin/rules-data-view.js. Wired by domain
+// key deliberately -- matching on the module name is how you get these two
+// swapped, and swapped is not a visible failure, it is two plausible screens
+// showing each other's content.
+//
+// Both take their container. Neither shares a class with the other: the split
+// found 65 and 48 exclusive classes and zero in common beyond .dt-btn and
+// .placeholder-msg, which live in admin-shared.css and suite.css.
+async function initRuleDataSurface(el) {
+  if (!el) return;
+  const role = getRole();
+  if (role !== 'st' && role !== 'dev') return;
+  try {
+    const [mod] = await Promise.all([
+      import('./admin/rules-view.js'),
+      loadSurfaceSheet('css/admin-shared.css'),
+      loadSurfaceSheet('css/admin-rule-data.css'),
+    ]);
+    await mod.initRulesView(document.getElementById('rules-content'), suiteState.chars || []);
+  } catch (err) {
+    console.error('[rule-data] surface failed to load:', err);
+    const t = el.querySelector('#rules-content') || el;
+    t.innerHTML = '<p class="placeholder-msg">Rule Data failed to load. Reload the page or check your connection.</p>';
+  }
+}
+
+async function initRulesEngineSurface(el) {
+  if (!el) return;
+  const role = getRole();
+  if (role !== 'st' && role !== 'dev') return;
+  try {
+    const [mod] = await Promise.all([
+      import('./admin/rules-data-view.js'),
+      loadSurfaceSheet('css/admin-shared.css'),
+      loadSurfaceSheet('css/admin-rules-engine.css'),
+    ]);
+    await mod.initRulesDataView(document.getElementById('rde-content'));
+  } catch (err) {
+    console.error('[rules-engine] surface failed to load:', err);
+    const t = el.querySelector('#rde-content') || el;
+    t.innerHTML = '<p class="placeholder-msg">Rules Engine failed to load. Reload the page or check your connection.</p>';
+  }
+}
+
+// ST Mods panel (#1064 Wave 2). Unblocked by ADR-009: initStModsPanel's
+// onMutate has to re-run the overlay composition, and until the sequence was
+// extracted into data/sheet-composition.js the only implementation lived in
+// admin.js. Reimplementing it here would have created the second composition
+// path CLAUDE.md forbids without an ADR.
+//
+// PER-CHARACTER, not global. The panel works on whichever character is open
+// (editorState.editIdx); with none open it renders its own "select a
+// character" placeholder. It therefore re-mounts on every tab entry rather
+// than once, so switching character and returning shows the right subject.
+//
+// No surface stylesheet: all 41 classes it emits are already covered by
+// player-loaded sheets, and zero live only in admin-layout.css -- its stm-*
+// rules sit in components.css, shared with editor/st-mod-popover.js.
+async function initStModsSurface(el) {
+  if (!el) return;
+  const role = getRole();
+  if (role !== 'st' && role !== 'dev') return;
+
+  try {
+    const mod = await import('./admin/st-mods-panel.js');
+    const idx = editorState.editIdx;
+    const c = (idx != null && idx >= 0) ? editorState.chars[idx] : null;
+    await mod.initStModsPanel(
+      document.getElementById('st-mods-panel-content'),
+      c,
+      // Bugfix #405: read chars[editIdx] FRESH inside the callback rather than
+      // closing over `c`. The closure pins the value at mount time, and the
+      // mutation then lands on a stale reference -- observed as
+      // _st_mod_overlay staying undefined after a successful POST.
+      () => {
+        const liveChar = editorState.chars[editorState.editIdx];
+        if (!liveChar) return;
+        composeAndRenderSheet(liveChar, {
+          renderSheet: editorRenderSheet,
+          loadTrackerState: ensureTrackerLoaded,
+        });
+        // index.html shows two views of one character where admin.html showed
+        // one. Repaint the suite sheet too when it is displaying the same
+        // character, or a mod applied from the panel would appear on the ST
+        // editor sheet and not on the sheet next to it.
+        if (String(suiteState.sheetChar?._id) === String(liveChar._id)) {
+          suiteRenderSheet();
+        }
+      },
+    );
+  } catch (err) {
+    console.error('[st-mods] surface failed to load:', err);
+    const target = el.querySelector('#st-mods-panel-content') || el;
+    target.innerHTML = '<p class="placeholder-msg">ST Mods failed to load. Reload the page or check your connection.</p>';
+  }
+}
+
+// Attendance surface (#1064 Wave 2). The domain mounts TWO modules, matching
+// admin.js:321 (`initNextSession(); initAttendance(chars);`). Neither takes a
+// container; each looks up its own id, so index.html supplies both and the
+// modules stay unmodified.
+//
+// Load-bearing for XP: game XP is derived at render time from game_sessions
+// attendance data, so this surface is the write side of a number shown on every
+// character sheet. The modules are unchanged here, so no write behaviour moves.
+async function initAttendanceSurface(el) {
+  if (!el) return;
+  const role = getRole();
+  if (role !== 'st' && role !== 'dev') return;
+
+  try {
+    const [ns, att] = await Promise.all([
+      import('./admin/next-session.js'),
+      import('./admin/attendance.js'),
+      loadSurfaceSheet('css/admin-shared.css'),
+      loadSurfaceSheet('css/admin-attendance.css'),
+    ]);
+    ns.initNextSession();
+    await att.initAttendance(suiteState.chars || []);
+  } catch (err) {
+    console.error('[attendance] surface failed to load:', err);
+    // Target the inner container: replacing the tab would destroy both ids and
+    // a retry could then never find them.
+    const target = el.querySelector('#attendance-content') || el;
+    target.innerHTML = '<p class="placeholder-msg">Attendance failed to load. Reload the page or check your connection.</p>';
+  }
+}
+
+// Equipment Catalogue surface (#1064 Wave 2). First surface whose CSS family
+// FAILED emitter exclusivity, and the reference for how that is handled: the
+// `ec-` blocks were split by which module emits each class, not by prefix.
+// admin.js's own equipment modal (.ec-modal-*, .ec-row, .ec-val, .ec-lbl,
+// .ec-close-btn) kept its 9 blocks in admin-layout.css; .ec-empty, emitted by
+// both, went to admin-shared.css; the remaining 44 are this surface's.
+//
+// Both sheets are therefore required. loadSurfaceSheet is promise-cached and
+// idempotent, so admin-shared.css costs nothing when Spheres already injected it
+// and there is no ordering dependency between the two.
+async function initEquipmentSurface(el) {
+  if (!el) return;
+  const role = getRole();
+  if (role !== 'st' && role !== 'dev') return;
+
+  try {
+    const [mod] = await Promise.all([
+      import('./admin/equipment-catalogue-admin.js'),
+      loadSurfaceSheet('css/admin-shared.css'),
+      loadSurfaceSheet('css/admin-equipment.css'),
+    ]);
+    // Takes its container, unlike Spheres/Players which look theirs up.
+    await mod.initEquipmentCatalogueAdmin(el, suiteState.chars || []);
+  } catch (err) {
+    console.error('[equipment] surface failed to load:', err);
+    el.innerHTML = '<p class="placeholder-msg">Equipment Catalogue failed to load. Reload the page or check your connection.</p>';
+  }
+}
+
+// Players surface (#1064 Wave 2). Third surface on the pattern Tickets and
+// Spheres established, and the first whose CSS family passed emitter
+// exclusivity outright: `pv-` is emitted by admin/players-view.js and nothing
+// else, so admin-players.css has no shared bucket and admin-shared.css is not
+// needed here.
+//
+// initPlayersView() takes the CHARACTERS array (not a container) and looks up
+// #players-content itself, so the module is used unmodified. suiteState.chars
+// is the boot-populated array every other read site uses; passing it keeps the
+// ST-mods overlay invariant intact, since those entries already have
+// applyStMods applied.
+async function initPlayersSurface(el) {
+  if (!el) return;
+  const role = getRole();
+  if (role !== 'st' && role !== 'dev') return;
+
+  try {
+    const [mod] = await Promise.all([
+      import('./admin/players-view.js'),
+      loadSurfaceSheet('css/admin-shared.css'),
+      loadSurfaceSheet('css/admin-players.css'),
+    ]);
+    await mod.initPlayersView(suiteState.chars || []);
+  } catch (err) {
+    console.error('[players] surface failed to load:', err);
+    // Write into the inner container, not the tab: replacing the tab would
+    // destroy #players-content and a retry could then never find it.
+    const target = el.querySelector('#players-content') || el;
+    target.innerHTML = '<p class="placeholder-msg">Players failed to load. Reload the page or check your connection.</p>';
   }
 }
 
@@ -1213,7 +1424,14 @@ async function _switchChar(idx) {
   if (getRole() === 'st') {
     renderIdentityTab(c);
     renderAttrsTab(c);
-    editorRenderSheet(c);
+    // ADR-009 D3: route the ST editor sheet through the shared composition
+    // site, supplying the tracker loader. Only STs reach this branch, and
+    // tracker_state is ST-auth-only at the API level, so the loader is exactly
+    // as available here as it is in admin.html. This closes the parity gap
+    // where the same ST saw spliced current vitae/willpower/health in
+    // admin.html and canonical values in index.html.
+    // Not awaited, matching admin.js's openCharDetail.
+    composeAndRenderSheet(c, { renderSheet: editorRenderSheet, loadTrackerState: ensureTrackerLoaded });
   }
 
   // Suite sheet — renders into both desktop full sheet and phone split tabs
@@ -1714,6 +1932,12 @@ const MORE_APPS = [
   { id: 'combat',       label: 'Combat',      icon: '<svg viewBox="0 0 24 24"><path d="M14.5 17.5L3 6V3h3l11.5 11.5"/><path d="M13 19l6-6"/><path d="M2 2l20 20"/><path d="M3 14l7-7"/></svg>', section: 'st', stOnly: true },
   { id: 'tickets',      label: 'Tickets',     icon: '<svg viewBox="0 0 24 24"><path d="M3 7a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 0 0 4v3a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-3a2 2 0 0 0 0-4z"/><line x1="9" y1="9" x2="15" y2="9"/><line x1="9" y1="13" x2="15" y2="13"/></svg>', section: 'st', stOnly: true },
   { id: 'spheres',      label: 'Spheres',     icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><ellipse cx="12" cy="12" rx="4" ry="9"/><line x1="3" y1="12" x2="21" y2="12"/></svg>', section: 'st', stOnly: true },
+  { id: 'players',      label: 'Players',     icon: '<svg viewBox="0 0 24 24"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>', section: 'st', stOnly: true },
+  { id: 'equipment',    label: 'Equipment',   icon: '<svg viewBox="0 0 24 24"><path d="M12 2l7 4v6c0 4-3 7.5-7 10-4-2.5-7-6-7-10V6z"/><path d="M9 12l2 2 4-4"/></svg>', section: 'st', stOnly: true },
+  { id: 'attendance',   label: 'Attendance',  icon: '<svg viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><line x1="16" y1="2" x2="16" y2="6"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="3" y1="10" x2="21" y2="10"/><path d="M9 16l2 2 4-4"/></svg>', section: 'st', stOnly: true },
+  { id: 'st-mods',      label: 'ST Mods',     icon: '<svg viewBox="0 0 24 24"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4z"/></svg>', section: 'st', stOnly: true },
+  { id: 'rule-data',    label: 'Rule Data',   icon: '<svg viewBox="0 0 24 24"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>', section: 'st', stOnly: true },
+  { id: 'rules-engine', label: 'Rules Engine',icon: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>', section: 'st', stOnly: true },
   { id: 'signin',       label: 'Check-In',    icon: _svg.signin,   section: 'st', coordinatorOnly: true },
   { id: 'finance',      label: 'Finance',     icon: '<svg viewBox="0 0 24 24"><line x1="12" y1="1" x2="12" y2="23"/><path d="M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>', section: 'st', coordinatorOnly: true },
   { id: 'emergency',    label: 'Emergency',   icon: _svg.emergency,section: 'st', coordinatorOnly: true },

@@ -1,0 +1,337 @@
+/* admin-rules-engine.css — ST-only surface sheet
+ *
+ * Extracted verbatim from admin-layout.css (#1064 Wave 2). No declaration
+ * edited. Bucketed by EMITTER, not by prefix: only admin/rules-data-view.js emits these classes.
+ * Classes it shares with other modules (.dt-btn, .placeholder-msg) are NOT
+ * here -- they live in admin-shared.css and suite.css respectively.
+ */
+
+/* ══════════════════════════════════════════
+   Rules Engine admin view (RDE-4)
+   ══════════════════════════════════════════ */
+
+.rde-shell {
+  display: flex;
+  min-height: 500px;
+}
+
+/* Left rail */
+.rde-left-rail {
+  width: 200px;
+  flex-shrink: 0;
+  background: var(--surf);
+  border-right: 1px solid var(--bdr);
+  border-radius: 4px 0 0 4px;
+  display: flex;
+  flex-direction: column;
+  padding: 8px 0;
+}
+
+.rde-rail-btn {
+  background: none;
+  border: none;
+  border-left: 3px solid transparent;
+  color: var(--txt2);
+  font-family: var(--fl);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  text-align: left;
+  padding: 10px 14px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  transition: background 0.12s, color 0.12s, border-color 0.12s;
+}
+.rde-rail-btn:hover { background: var(--surf2); color: var(--txt); }
+
+.rde-rail-label { flex: 1; }
+
+.rde-rail-count {
+  background: var(--gold2);
+  color: var(--bg);
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 1px 6px;
+  min-width: 18px;
+  text-align: center;
+}
+
+/* Main area */
+.rde-main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border: 1px solid var(--bdr);
+  border-left: none;
+  border-radius: 0 4px 4px 0;
+  overflow: hidden;
+  background: var(--surf);
+}
+
+/* List panel */
+.rde-list-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--bdr);
+  background: var(--surf);
+}
+
+.rde-search {
+  flex: 1;
+  background: var(--surf2);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  color: var(--txt);
+  font-family: var(--fl);
+  font-size: 13px;
+  padding: 6px 10px;
+}
+.rde-search:focus { outline: none; border-color: var(--gold2); }
+
+.rde-new-btn { margin-left: auto; }
+
+.rde-tbl-wrap {
+  overflow-y: auto;
+  flex: 1;
+}
+
+.rde-tbl {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+.rde-tbl th {
+  background: var(--surf);
+  color: var(--txt3);
+  font-family: var(--fl);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 8px 12px;
+  text-align: left;
+  border-bottom: 1px solid var(--bdr);
+  white-space: nowrap;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.rde-tbl td {
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--bdr);
+  vertical-align: middle;
+}
+.rde-row { cursor: pointer; transition: background 0.1s; }
+.rde-row:hover { background: var(--surf2); }
+.rde-td-source { font-weight: 600; color: var(--txt); }
+.rde-td-tier { font-family: monospace; color: var(--gold2); }
+.rde-td-notes { color: var(--txt3); font-size: 12px; max-width: 220px; }
+.rde-td-actions { white-space: nowrap; text-align: right; }
+.rde-empty { text-align: center; color: var(--txt3); padding: 32px; font-style: italic; }
+
+.rde-edit-btn,
+.rde-del-btn,
+.rde-del-confirm-btn {
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 2px 6px;
+  font-size: 14px;
+  border-radius: 3px;
+  transition: background 0.1s;
+}
+.rde-edit-btn { color: var(--gold2); }
+.rde-edit-btn:hover { background: var(--surf2); }
+.rde-del-btn,
+.rde-del-confirm-btn { color: var(--crim); }
+.rde-del-btn:hover,
+.rde-del-confirm-btn:hover { background: var(--surf2); }
+
+/* Side panel — fixed drawer that slides in from the right */
+.rde-side-panel {
+  position: fixed;
+  right: 0;
+  top: 0;
+  height: 100vh;
+  width: 400px;
+  background: var(--surf);
+  border-left: 1px solid var(--bdr);
+  display: flex;
+  flex-direction: column;
+  overflow-y: auto;
+  z-index: 300;
+  box-shadow: -4px 0 32px rgba(0, 0, 0, 0.5);
+}
+
+.rde-main > .rde-list-toolbar { flex: 0 0 auto; }
+.rde-main > .rde-tbl-wrap { flex: 1 1 300px; overflow-y: auto; max-height: 70vh; }
+
+.rde-form-header {
+  font-family: var(--fh);
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--gold2);
+  padding: 16px 16px 12px;
+  border-bottom: 1px solid var(--bdr);
+  letter-spacing: 0.04em;
+}
+
+.rde-form-body {
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  overflow-y: auto;
+}
+
+.rde-form-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.rde-field-err .rde-form-input { border-color: var(--crim); }
+
+.rde-form-label {
+  font-family: var(--fl);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--txt3);
+}
+
+.rde-form-input {
+  background: var(--surf2);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  color: var(--txt);
+  font-family: var(--fl);
+  font-size: 13px;
+  padding: 6px 10px;
+  width: 100%;
+}
+.rde-form-input:focus { outline: none; border-color: var(--gold2); }
+.rde-form-num { width: 80px; }
+
+.rde-notes-ta {
+  resize: vertical;
+  min-height: 60px;
+}
+
+.rde-form-hint {
+  font-size: 11px;
+  color: var(--txt3);
+  font-style: italic;
+}
+
+.rde-form-err {
+  font-size: 11px;
+  color: var(--crim);
+  font-weight: 600;
+  min-height: 14px;
+}
+
+.rde-form-status {
+  padding: 6px 16px;
+  font-size: 12px;
+  color: var(--txt3);
+  min-height: 24px;
+}
+
+.rde-form-actions {
+  display: flex;
+  gap: 8px;
+  padding: 12px 16px;
+  border-top: 1px solid var(--bdr);
+  align-items: center;
+}
+.rde-cancel-btn { margin-right: auto; }
+
+/* Preview */
+.rde-preview-section {
+  border-top: 1px solid var(--bdr);
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.rde-preview-header {
+  font-family: var(--fh);
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--gold2);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.rde-preview-ctrl {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rde-preview-cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-top: 6px;
+}
+
+.rde-preview-col {
+  background: var(--surf2);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 8px;
+}
+
+.rde-preview-col-hdr {
+  font-family: var(--fl);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--txt3);
+  margin-bottom: 6px;
+}
+
+.rde-preview-merits {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.rde-preview-merit-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+}
+
+.rde-preview-merit-name {
+  color: var(--txt2);
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.rde-preview-merit-dots { white-space: nowrap; }
+
+.rde-preview-empty {
+  color: var(--txt3);
+  font-style: italic;
+  font-size: 12px;
+  padding: 8px 0;
+}

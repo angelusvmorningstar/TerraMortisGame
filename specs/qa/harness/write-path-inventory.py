@@ -265,14 +265,26 @@ def touched(ref):
     for r in collect():
         sites.setdefault(r['file'], set()).add(r['line'])
 
-    hits, cur, touched_files = [], None, set()
+    hits, cur, prev_a, touched_files = [], None, None, set()
     hunk = re.compile(r'^@@ -\S+ \+(\d+)(?:,(\d+))? @@')
     mutating = re.compile(r'api(?:Post|Put|Patch|Delete)\s*\(|[\'"`](?:POST|PUT|PATCH|DELETE)[\'"`]')
     for line in diff.split('\n'):
-        m = re.match(r'^\+\+\+ b/(.+)$', line)
+        # Remember the a-side path: for a DELETED file git emits `+++ /dev/null`,
+        # so the b-side match below fails and this is the only place the path
+        # appears. Without it `cur` kept its previous value and every removed
+        # line of the deleted file was attributed to whichever file happened to
+        # precede it in the diff — a wrong filename in the report, and equally
+        # able to invent a hit or hide one. Found attributing wizard.js's
+        # apiPost('/api/characters/wizard') to app.js during #1064 Wave 2.
+        m = re.match(r'^--- (?:a/)?(.+)$', line)
         if m:
-            cur = m.group(1)
-            touched_files.add(cur)
+            prev_a = None if m.group(1) == '/dev/null' else m.group(1)
+            continue
+        m = re.match(r'^\+\+\+ (?:b/)?(.+)$', line)
+        if m:
+            cur = prev_a if m.group(1) == '/dev/null' else m.group(1)
+            if cur:
+                touched_files.add(cur)
             continue
         m = hunk.match(line)
         if m and cur:
@@ -284,9 +296,15 @@ def touched(ref):
         if line[:1] in '+-' and not line.startswith(('+++', '---')):
             body = line[1:]
             if mutating.search(body):
+                # Direction matters. An ADDED write call can change what is
+                # persisted; a REMOVED one cannot. Both are still reported --
+                # deleting a write is a behavioural change worth a human look --
+                # but they are labelled apart so a deletion-only diff is not
+                # mistaken for a new write path.
+                verb = 'adds' if line[0] == '+' else 'removes'
                 for coll, rx in COLLECTIONS.items():
                     if rx.search(body):
-                        hits.append((cur or '?', 0, f'diff line mutates {coll}'))
+                        hits.append((cur or '?', 0, f'diff line {verb} a write to {coll}'))
 
     print('=' * 74)
     print(f'DISPLAY-ONLY CHECK vs {ref}   (ADR-008 D10)')

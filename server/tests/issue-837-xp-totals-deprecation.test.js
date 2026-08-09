@@ -302,10 +302,6 @@ describe('#837 — client-side writer sites no longer touch xp_total / xp_spent'
     expect(src).not.toMatch(/updField\(['"]xp_spent['"]/);
   });
 
-  it('tabs/wizard.js initialiser no longer seeds xp_total / xp_spent on new chars', () => {
-    const src = read('public/js/tabs/wizard.js');
-    // Pre-#837: xp_total: 10, xp_spent: 0 in the blank-char shape.
-    expect(src).not.toMatch(/xp_total:\s*10/);
-    expect(src).not.toMatch(/xp_spent:\s*0/);
-  });
+  // tabs/wizard.js deleted (Wave 0, #1095) — it was unreachable from every HTML
+  // entry point, so its xp_total / xp_spent assertion is satisfied by absence.
 });

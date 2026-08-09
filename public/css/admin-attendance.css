@@ -1,0 +1,201 @@
+/* admin-attendance.css — the Attendance surface (ST-only)
+ *
+ * Extracted verbatim from admin-layout.css (#1064 Wave 2). No declaration was
+ * edited. Covers admin/attendance.js and admin/next-session.js, which the
+ * Attendance domain mounts together.
+ *
+ * Shared classes are NOT here: .dt-btn and .placeholder live in
+ * admin-shared.css because six other admin modules emit them.
+ */
+
+/* ── Attendance & Finance ── */
+
+.att-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.att-toolbar-left {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.att-label {
+  font-family: var(--fl);
+  font-size: 13px;
+  color: var(--txt2);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.att-select {
+  background: var(--surf2);
+  color: var(--txt);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 6px 10px;
+  font-size: 13px;
+  font-family: var(--ft);
+}
+
+.att-btn {
+  background: var(--surf2);
+  color: var(--accent);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 6px 14px;
+  font-size: 12px;
+  font-family: var(--fl);
+  cursor: pointer;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+.att-btn:hover { border-color: var(--accent); }
+
+.att-summary {
+  display: flex;
+  align-items: center;
+  gap: 24px;
+  padding: 8px 0 12px;
+  font-family: var(--fl);
+  font-size: 13px;
+  color: var(--txt2);
+  border-bottom: 1px solid var(--bdr);
+  margin-bottom: 8px;
+}
+
+.att-stat strong { color: var(--accent); }
+
+.att-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.att-table thead th {
+  font-family: var(--fl);
+  font-size: 13px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--txt3);
+  padding: 8px 6px;
+  text-align: center;
+  border-bottom: 1px solid var(--bdr);
+}
+
+.att-name-col { text-align: left; min-width: 130px; }
+.att-char-col { text-align: left; min-width: 140px; }
+.att-sort-hd { cursor: pointer; user-select: none; white-space: nowrap; }
+.att-sort-hd:hover { color: var(--accent); }
+.att-check-col { width: 70px; }
+.att-num-col { width: 60px; }
+.att-xp-col { width: 50px; }
+.att-pay-col { width: 120px; }
+
+.att-row { border-bottom: 1px solid var(--bdr); }
+.att-row:hover { background: var(--surf2); }
+.att-row.att-absent { opacity: 0.45; }
+
+.att-player-name {
+  font-family: var(--ft);
+  color: var(--txt);
+  padding: 8px 6px;
+  text-align: left;
+  font-size: 13px;
+}
+
+.att-char-name {
+  font-family: var(--fl);
+  color: var(--accent);
+  padding: 8px 6px;
+  text-align: left;
+  font-size: 12px;
+}
+
+.att-check {
+  text-align: center;
+  padding: 8px 6px;
+}
+
+.att-check input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  cursor: pointer;
+  accent-color: var(--accent);
+}
+
+.att-num {
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.att-num input {
+  width: 40px;
+  background: var(--surf2);
+  color: var(--txt);
+  border: 1px solid var(--bdr);
+  border-radius: 3px;
+  text-align: center;
+  padding: 3px;
+  font-size: 12px;
+}
+
+.att-xp {
+  text-align: center;
+  padding: 8px 6px;
+  font-family: var(--fl);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.att-pay {
+  text-align: center;
+  padding: 8px 4px;
+}
+
+.att-pay select {
+  background: var(--surf2);
+  color: var(--txt);
+  border: 1px solid var(--bdr);
+  border-radius: 3px;
+  padding: 3px 6px;
+  font-size: 12px;
+  width: 100%;
+}
+
+.att-empty {
+  padding: 48px 24px;
+  text-align: center;
+  color: var(--txt3);
+  font-family: var(--fl);
+  font-size: 14px;
+}
+
+.att-add-form {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 16px;
+  background: var(--surf1);
+  border-bottom: 1px solid var(--surf2);
+}
+
+.att-add-form select {
+  background: var(--surf2);
+  color: var(--txt1);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  padding: 4px 8px;
+  font-size: 13px;
+  min-width: 200px;
+}
+
+.att-add-form select:focus {
+  outline: none;
+  border-color: var(--accent);
+}

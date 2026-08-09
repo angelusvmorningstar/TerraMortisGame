@@ -1,0 +1,243 @@
+/* admin-players.css — the Players surface (ST-only)
+ *
+ * Extracted verbatim from admin-layout.css for the shell merge. No declaration
+ * was edited; the 48 blocks below are byte-identical to their originals.
+ *
+ * EMITTER: public/js/admin/players-view.js, and nothing else. The `pv-` family
+ * is emitted by exactly one module, so this sheet has no shared-class bucket.
+ *
+ * Two custom properties referenced here are defined in no stylesheet:
+ *   --gold1  (used by .pv-badge-coord, fallback #C9A962)
+ *   --fc     (used by .pv-did,         fallback monospace)
+ * Both carry fallbacks, so they render identically before and after this move.
+ * They belong to the dangling-property set tracked in #1105 and are NOT
+ * introduced here.
+ */
+
+/* ── Players domain ── */
+
+.pv-toolbar {
+  margin-bottom: 16px;
+}
+
+.pv-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.pv-card {
+  background: var(--surf1);
+  border: 1px solid var(--bdr);
+  border-radius: 6px;
+  overflow: hidden;
+}
+.pv-card-header {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 16px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.pv-card-header:hover { background: var(--surf2); }
+.pv-card-expanded { border-color: var(--accent-a40); }
+.pv-row-actions { flex-shrink: 0; }
+.pv-icon-btn {
+  background: none;
+  border: none;
+  color: var(--txt3);
+  font-size: 16px;
+  cursor: pointer;
+  padding: 4px 6px;
+  border-radius: 3px;
+  transition: color 0.15s, background 0.15s;
+}
+.pv-icon-btn:hover { color: var(--accent); background: var(--accent-a8); }
+.pv-remove-btn:hover { color: var(--crim2); background: var(--crim-a8); }
+.pv-detail {
+  padding: 12px 16px;
+  border-top: 1px solid var(--bdr);
+  background: var(--surf);
+}
+.pv-detail-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 16px;
+  margin-bottom: 10px;
+}
+.pv-detail-wide { grid-column: 1 / -1; }
+.pv-detail-field { font-size: 13px; color: var(--txt); }
+.pv-detail-label {
+  display: block;
+  font-family: var(--fl);
+  font-size: 10px;
+  color: var(--txt3);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  margin-bottom: 2px;
+}
+.pv-detail-actions { display: flex; gap: 8px; }
+
+.pv-avatar {
+  width: 40px;
+  height: 40px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: var(--surf2);
+}
+
+.pv-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pv-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pv-name {
+  font-family: var(--fl);
+  font-size: 14px;
+  color: var(--txt);
+}
+
+.pv-badge {
+  font-size: 10px;
+  font-family: var(--fl);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  padding: 1px 7px;
+  border-radius: 3px;
+}
+
+.pv-badge-st     { background: var(--accent-a8); color: var(--accent); }
+.pv-badge-coord  { background: var(--gold1, #C9A962); color: var(--bg, #0D0B09); }
+.pv-badge-player { background: var(--surf2); color: var(--txt3); }
+
+.pv-discord-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 12px;
+}
+
+.pv-handle { color: var(--txt2); }
+.pv-did    { font-family: var(--fc, monospace); color: var(--txt3); font-size: 11px; }
+.pv-dim    { color: var(--txt3); font-style: italic; }
+
+.pv-chars {
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.pv-meta {
+  text-align: right;
+  flex-shrink: 0;
+}
+
+.pv-login {
+  font-size: 11px;
+  color: var(--txt3);
+  white-space: nowrap;
+}
+
+.pv-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.pv-remove-btn { color: var(--crim2) !important; border-color: var(--crim-a40) !important; }
+.pv-remove-btn:hover { border-color: var(--crim2) !important; }
+
+/* Players add / edit form */
+
+.pv-form {
+  background: var(--surf1);
+  border: 1px solid var(--accent-a40);
+  border-radius: 6px;
+  padding: 18px 20px;
+  margin-bottom: 16px;
+}
+
+.pv-form-title {
+  font-family: var(--fl);
+  font-size: 13px;
+  color: var(--accent);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  margin-bottom: 14px;
+}
+
+.pv-form-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-bottom: 12px;
+  align-items: start;
+}
+
+.pv-label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: 12px;
+  color: var(--txt3);
+}
+
+.pv-req { color: var(--accent); }
+
+.pv-char-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  padding: 8px 0 4px;
+}
+.pv-char-check {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13px;
+  color: var(--txt);
+  cursor: pointer;
+  white-space: nowrap;
+}
+.pv-char-cb { accent-color: var(--accent); cursor: pointer; }
+
+.pv-input, .pv-select {
+  padding: 6px 9px;
+  background: var(--surf2);
+  border: 1px solid var(--bdr);
+  border-radius: 4px;
+  color: var(--txt);
+  font-size: 13px;
+  font-family: var(--ft);
+}
+
+.pv-input:focus, .pv-select:focus { outline: none; border-color: var(--gold-a30); }
+
+.pv-hint {
+  font-size: 11px;
+  color: var(--txt3);
+  line-height: 1.4;
+}
+
+.pv-hint-inline { font-size: 11px; color: var(--txt3); }
+
+.pv-err {
+  color: var(--crim2);
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.pv-form-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}

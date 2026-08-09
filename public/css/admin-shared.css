@@ -59,3 +59,47 @@
   padding: 8px 10px;
 }
 .spheres-grid { grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); }
+
+
+/* ── .ec-empty — emitted by BOTH admin/equipment-catalogue-admin.js and
+   admin.js's equipment modal, so it belongs to neither surface sheet.
+   Moved here verbatim during #1064 Wave 2. ── */
+.ec-empty { font-family: var(--ft); font-size: 13px; color: var(--txt3); font-style: italic; }
+.ec-empty { color: var(--txt3); text-align: center; padding: 24px 12px; }
+
+
+/* ── Cross-surface classes emitted by many admin modules (#1064 Wave 2).
+   .dt-btn is emitted by attendance, players-view, data-portability,
+   ordeals-admin, primer-admin, admin.js and downtime-views; .placeholder by
+   players-view and spheres-view. Both were reachable only via
+   admin-layout.css, which index.html does not load, so every ST surface
+   already moved was rendering them unstyled.
+
+   NOT moved: `.dt-btn:active, .proc-rote-chip..., .proc-again-opt...` is a
+   comma group mixing .dt-btn with two non-family selectors. Relocating it
+   would require splitting, which is an edit rather than an extraction, so it
+   stays behind and .dt-btn has no :active state in index.html. Cosmetic. ── */
+.placeholder {
+  color: var(--txt3);
+  font-style: italic;
+  padding: 40px 0;
+}
+
+.dt-btn {
+  background: var(--surf);
+  border: 1px solid var(--bdr);
+  color: var(--txt);
+  padding: 8px 16px;
+  border-radius: 4px;
+  font-family: var(--fl);
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.dt-btn:hover { border-color: var(--accent); }
+
+
+/* .dt-deadline-edit — emitted by admin/attendance.js AND
+   admin/downtime-views.js, so it belongs to neither surface sheet.
+   Moved here during #1064 Wave 2. */
+.dt-deadline-edit { display: flex; align-items: center; gap: 6px; font-family: var(--fl); font-size: 12px; color: var(--txt-dim); margin-left: 8px; }

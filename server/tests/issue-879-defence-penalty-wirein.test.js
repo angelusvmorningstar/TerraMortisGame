@@ -152,13 +152,21 @@ describe('#879 — Concern #8 (editor hint wording verbatim)', () => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 describe('#879 — Concern #4 (render-path orchestrator wires materialisation before applyStMods)', () => {
-  it('admin.js renderSheetWithOverlay calls materialiseDerivedDefence before applyStMods', () => {
-    const src = read('public/js/admin.js');
-    const fnStart = src.indexOf('async function renderSheetWithOverlay');
+  // ADR-009 D1 moved the sequence out of admin.js into data/sheet-composition.js
+  // so that admin.js and app.js could stop each keeping their own copy. The
+  // invariant this guards is unchanged and is now asserted at the single site.
+  // Do not re-point this at an entry point: if the sequence reappears in one,
+  // adr-009-single-composition-site.test.js is what should fail.
+  it('sheet-composition.js calls materialiseDerivedDefence before applyStMods', () => {
+    const src = read('public/js/data/sheet-composition.js');
+    const fnStart = src.indexOf('export async function renderSheetWithOverlay');
     expect(fnStart).toBeGreaterThan(-1);
-    const fnBody = src.slice(fnStart, fnStart + 1800);
-    const idxMaterialise = fnBody.indexOf('materialiseDerivedDefence');
-    const idxApply       = fnBody.indexOf('applyStMods(');
+    const fnBody = src.slice(fnStart);
+    // Anchor past the edit-mode early return, which strips and re-materialises
+    // without ever reaching applyStMods.
+    const nonEdit = fnBody.slice(fnBody.indexOf('loadTrackerState === '));
+    const idxMaterialise = nonEdit.indexOf('materialiseDerivedDefence');
+    const idxApply       = nonEdit.indexOf('applyStMods(');
     expect(idxMaterialise).toBeGreaterThan(-1);
     expect(idxApply).toBeGreaterThan(-1);
     expect(idxMaterialise).toBeLessThan(idxApply);
@@ -175,13 +183,20 @@ describe('#879 — Concern #4 (render-path orchestrator wires materialisation be
     expect(src).toMatch(/for\s*\(\s*const\s+c\s+of\s+\(suiteState\.chars\s*\|\|\s*\[\]\)\s*\)\s*materialiseDerivedDefence\(c\)/);
   });
 
-  it('admin.js + app.js onStModUpdate paths re-materialise before re-applying', () => {
-    const adminSrc = read('public/js/admin.js');
-    const appSrc   = read('public/js/app.js');
-    // Both should call materialiseDerivedDefence(target) before the
-    // applyOverlayToAll([target], ...) call in their onStModUpdate handlers.
-    expect(adminSrc).toMatch(/materialiseDerivedDefence\(target\);\s*await\s+applyOverlayToAll\(\[target\]/);
-    expect(appSrc).toMatch(/materialiseDerivedDefence\(target\);\s*await\s+applyOverlayToAll\(\[target\]/);
+  // ADR-009 D1 step 2 converged admin.js's and app.js's refreshCharacterOverlay
+  // onto one implementation, so this invariant is now asserted once at the
+  // shared site instead of twice at two copies that could disagree -- which is
+  // exactly what they had started to do.
+  it('the onStModUpdate path re-materialises before re-applying', () => {
+    const src = read('public/js/data/sheet-composition.js');
+    expect(src).toMatch(/materialiseDerivedDefence\(target\);\s*await\s+applyOverlayToAll\(\[target\]/);
+  });
+
+  it('neither entry point keeps its own copy of that sequence', () => {
+    for (const rel of ['public/js/admin.js', 'public/js/app.js']) {
+      expect(read(rel), `${rel} should delegate to data/sheet-composition.js`)
+        .not.toMatch(/materialiseDerivedDefence\(target\);\s*await\s+applyOverlayToAll\(\[target\]/);
+    }
   });
 });
 

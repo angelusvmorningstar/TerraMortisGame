@@ -374,6 +374,39 @@
          the outer #t-spheres, the module needs the inner #spheres-content. -->
     <div id="t-spheres" class="tab"><div id="spheres-content"></div></div>
     <div id="t-tickets" class="tab"></div>
+    <!-- ST Players (#1064 Wave 2). Same shape as Spheres: initPlayersView()
+         takes the characters array, not a container, and looks up
+         #players-content itself (players-view.js:37). Do not rename the inner
+         id — goTab needs the outer #t-players, the module needs the inner one.
+         No heading here: admin.html supplied one from its own domain chrome
+         (.domain-count lives in admin-layout.css, which this document does not
+         load). players-view.js guards the count with `if (count)` at :57, so
+         omitting it is safe and keeps this extraction free of new rules. -->
+    <div id="t-players" class="tab"><div id="players-content"></div></div>
+    <!-- ST Equipment Catalogue (#1064 Wave 2). Unlike Spheres and Players,
+         initEquipmentCatalogueAdmin(container, chars) TAKES its container, so
+         no inner id is needed here. -->
+    <div id="t-equipment" class="tab"></div>
+    <!-- ST Attendance (#1064 Wave 2). The domain mounts TWO modules that each
+         look up their own container: initNextSession() reads
+         #next-session-content, initAttendance(chars) reads #attendance-content.
+         Both ids are required and neither module takes a container argument. -->
+    <div id="t-attendance" class="tab">
+      <div id="next-session-content"></div>
+      <div id="attendance-content"></div>
+    </div>
+    <!-- ST Mods panel (#1064 Wave 2, unblocked by ADR-009). Per-character
+         workbench: it operates on whichever character is currently open, so it
+         re-mounts on tab entry rather than once at boot. No surface stylesheet
+         is injected for it: its stm-* rules already live in components.css,
+         shared with editor/st-mod-popover.js which is in the player graph. -->
+    <div id="t-st-mods" class="tab"><div id="st-mods-panel-content"></div></div>
+    <!-- ST Rule Data (#1064 Wave 2). NOTE the module names are inverted
+         relative to the sidebar labels they serve: the "Rule Data" screen is
+         admin/rules-view.js and the "Rules Engine" screen is
+         admin/rules-data-view.js. Wired by domain key, not by module name. -->
+    <div id="t-rule-data" class="tab"><div id="rules-content"></div></div>
+    <div id="t-rules-engine" class="tab"><div id="rde-content"></div></div>
     <div id="t-devlog" class="tab"></div>
     <div id="t-emergency" class="tab"></div>
     <div id="t-combat" class="tab"></div>
