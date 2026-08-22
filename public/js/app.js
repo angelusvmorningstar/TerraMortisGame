@@ -52,7 +52,12 @@ import { devotions, rites, setStatusTerritories } from './data/accessors.js';
 import { renderCharPools } from './game/char-pools.js';
 import { renderMapStageHtml } from './components/map-overlay.js';
 import { openContestedRoll, closeContestedRoll, crSetType, crSetChar, crAdjPool, crRoll } from './game/contested-roll.js';
-import { startChallengePoller, stopChallengePoller } from './game/challenge-notification.js';
+// crd.2: the blocking incoming-challenge modal that used to poll here is gone
+// (module deleted, not left dead in the tree). Its replacement is a calm,
+// always-present player queue with its own honest routing contract into the
+// resolution screen crd.3b will build.
+import { initPendingQueue, refreshPendingQueueBadge, hasPendingChallenges } from './game/pending-queue.js';
+import { initContestedResolve } from './game/contested-resolve.js';
 import { openChallengeModal } from './game/challenge-initiation.js';
 import { loadDtLookup } from './game/dt-lookup.js';
 import { initTracker, trackerReset, trackerAdj, trackerAddCondition, trackerRemoveCond, trackerToggle, ensureLoaded as ensureTrackerLoaded, refreshTrackerCard } from './game/tracker.js';
@@ -373,6 +378,8 @@ const TAB_SUBTITLES = {
   territory: 'Territory',
   more: 'More',
   settings: 'Settings',
+  'contested-queue': 'Challenges',
+  'contested-resolve': 'Resolve Challenge',
 };
 
 const EDITOR_TABS = new Set(['chars', 'editor', 'edit']);
@@ -455,7 +462,12 @@ function renderBottomNav() {
   }
 }
 
-function goTab(t) {
+// crd.2: `ctx` is an optional context payload for tabs that are opened ABOUT
+// something specific rather than just opened. Every existing call site passes
+// one argument and is unaffected; only the tabs that declare they want a
+// context read it. First (and currently only) consumer: 'contested-resolve',
+// which is meaningless without the id of the challenge being resolved.
+function goTab(t, ctx) {
   // Challenge tile opens modal rather than navigating to a tab
   if (t === 'challenge') {
     const activeChar = editorState.chars.find(c => c === editorState.chars[editorState.editIdx]) || editorState.chars[0];
@@ -571,6 +583,23 @@ function goTab(t) {
     const el = document.getElementById('t-ordeals');
     const char = _activeMoreChar();
     if (el && char) initOrdeals(char, suiteState.chars, el);
+  }
+  // crd.2 — pending contested-roll queue, and the destination it routes into.
+  // The queue is handed the viewer's own characters so each row can name WHICH
+  // of them is being challenged; it never filters on them (the server's
+  // GET /mine is the only authority on what belongs in this queue).
+  // `checkMoreBadge` is injected rather than imported by the queue: app.js
+  // already imports FROM pending-queue.js, so an import the other way would be
+  // circular. Without it the shared #more-badge went stale in both directions
+  // while this tab was open (lit after the queue emptied, dark after a poll
+  // found new work) — the queue's own poll had no path to the badge's one owner.
+  if (t === 'contested-queue') {
+    const el = document.getElementById('t-contested-queue');
+    if (el) initPendingQueue(el, suiteState.chars || [], checkMoreBadge);
+  }
+  if (t === 'contested-resolve') {
+    const el = document.getElementById('t-contested-resolve');
+    if (el) initContestedResolve(el, ctx);
   }
   if (t === 'emergency') {
     const el = document.getElementById('t-emergency');
@@ -1517,7 +1546,10 @@ async function boot() {
 
         renderLifecycleCards(); // non-blocking
         checkMoreBadge();       // non-blocking
-        if (getRole() !== 'st') startChallengePoller(); // player-only polling
+        // crd.2: one boot-time read so the Challenges tile can carry a live
+        // badge before the player ever opens the queue. The 10s poll itself
+        // only runs while the queue tab is actually being looked at.
+        if (getRole() !== 'st') refreshPendingQueueBadge().then(checkMoreBadge);
 
         // Start WebSocket for live tracker sync
         initWS({
@@ -1685,6 +1717,16 @@ const MORE_APPS = [
     }
   },
   { id: 'ordeals',      label: 'Ordeals',     icon: _svg.ordeals,  section: 'player' },
+  // crd.2 — the defender's own pending contested-roll queue. Deliberately a
+  // More-grid tile and NOT a bottom-nav item: it is something a player checks
+  // on their own terms, which is the whole point of replacing the modal that
+  // used to interrupt them. Badge follows the Downtime entry's established
+  // shape exactly: a pure read of a cache the boot path primed, never a fetch
+  // from inside the badge callback (renderMoreGrid calls it on every render).
+  // A shield, not the Combat tab's crossed blades: this is the defence surface.
+  { id: 'contested-queue', label: 'Challenges', icon: '<svg viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/></svg>', section: 'player',
+    badge: () => hasPendingChallenges()
+  },
   // Challenge tile hidden (#1015). The click-handler + modal (openChallengeModal) remain wired for future programmatic use.
   // ── Storyteller section (ST role only) ──
   { id: 'tracker',      label: 'Tracker',     icon: _svg.tracker,  section: 'st', stOnly: true },
@@ -2000,6 +2042,13 @@ async function checkMoreBadge() {
     const lastViewed = localStorage.getItem('tm-last-viewed-sub');
     if (String(mySubmission._id) !== lastViewed) hasBadge = true;
   }
+
+  // crd.2: a pending contested-roll challenge still lights #more-badge. The
+  // retired modal module used to write this element directly (and clobbered the
+  // class-based toggle above with its own inline display, which is why the two
+  // signals fought each other). Reading the queue's cache here keeps the entry
+  // point players already have muscle memory for, with one owner of the element.
+  if (!hasBadge && hasPendingChallenges()) hasBadge = true;
 
   badge.classList.toggle('visible', hasBadge);
 }

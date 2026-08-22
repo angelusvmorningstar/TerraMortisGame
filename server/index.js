@@ -262,6 +262,53 @@ async function start() {
         partialFilterExpression: { request_type: 'status_action', status: 'pending' },
       },
     );
+    // Ensure the defender-queue compound index on contested_roll_requests
+    // (crd.1) — contested-rolls.js's GET /mine filters on target_character_id
+    // + status and sorts by created_at descending. Until crd.1 the ONLY index
+    // on this collection was the status_action partial unique one above, so a
+    // player's queue poll (every 10s, 30+ players at real table scale) was an
+    // unindexed scan across every historical challenge ever recorded.
+    // Not awaited, and deliberately not unique: it constrains nothing, so
+    // unlike the game_sessions.chapter_id index below it cannot reject at
+    // build time on live data.
+    getDb().collection('contested_roll_requests').createIndex(
+      { target_character_id: 1, status: 1, created_at: -1 },
+      { name: 'crd1_defender_queue', background: true },
+    );
+    // Ensure the terminal-status TTL index on contested_roll_requests (crd.1).
+    // Nothing has ever expired records in this collection; resolved/declined/
+    // voided documents accumulate for the life of the campaign. session_logs
+    // (written by contested-rolls.js's own accept path) carries the durable
+    // audit record, so no terminal request needs indefinite retention here.
+    // Retention: 30 days — long enough to cover a game's own post-session
+    // review window at this project's session cadence, short enough that the
+    // collection stays bounded across a whole campaign.
+    //
+    // The partial filter is on status alone, so it also covers terminal
+    // status_action records sharing this collection. That is safe and
+    // intended: office_actions holds the durable applied-action log, oaq.3's
+    // approval queue reads status:'pending' only, and oaq.2's "already acted
+    // on this target this session" dedupe read is scoped to the CURRENT
+    // game_session_id, whose records are days old, never 30+.
+    //
+    // KNOWN LIMITATION, deliberately not fixed here: MongoDB's TTL monitor
+    // only expires documents whose indexed field holds a BSON Date. Every
+    // writer on this collection (contested-rolls.js AND office-actions.js)
+    // stores `new Date().toISOString()` — a string — so this index is correct
+    // and idempotent but reaps nothing until updated_at becomes a real Date.
+    // Converting it is a cross-route data-shape change plus a backfill of
+    // every existing document, which crd.1 explicitly excludes. Flagged for a
+    // follow-up story; see crd-1-contested-roll-request-shape.test.js's own
+    // "DOCUMENTED LIMITATION" test, which fails the day updated_at changes.
+    getDb().collection('contested_roll_requests').createIndex(
+      { updated_at: 1 },
+      {
+        name: 'crd1_terminal_status_ttl',
+        background: true,
+        expireAfterSeconds: 2592000,
+        partialFilterExpression: { status: { $in: ['resolved', 'declined', 'voided'] } },
+      },
+    );
     // Ensure partial unique index on game_sessions.chapter_id (CM-6, folded into cm-4 per
     // cycle-model.md §11a step 6) — makes the confirmed-always-1:1 session/Chapter invariant
     // (Angelus, 2026-08-16) a database constraint rather than a convention.

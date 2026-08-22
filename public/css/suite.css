@@ -2354,17 +2354,62 @@ body.desktop-mode.sidebar-collapsed .sb-collapse-btn { width: 100%; justify-cont
 
 /* Approval Queue (oaq.3) — moved into the game app; reuses .stm-audit-*
    (scaffold shell, components.css), .dtl-badge (label), .ch-btn/.ch-error
-   (challenge-notification.js's existing accept/decline + error styling,
-   same contested_roll_requests collection family) rather than the
+   (the .ch-* accept/decline + error styling shared across this
+   contested_roll_requests collection family; the module that first defined
+   them was retired by crd.2, the classes and their consumers remain) rather
+   than the
    admin-app-only .dt-btn/.or-list/.or-status-badge classes this module
    used before the move (admin-layout.css isn't loaded by index.html). */
 .oaq-queue-list { display: flex; flex-direction: column; gap: 8px; }
-.oaq-queue-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; }
+.oaq-queue-row, .cq-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 14px; }
 .oaq-queue-name { font-size: 13px; color: var(--txt); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .oaq-queue-actions { display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
 .oaq-queue-btns { gap: 6px; }
 .oaq-queue-btns .ch-btn { padding: 6px 12px; }
 .oaq-queue-error { padding: 0 14px 8px; }
+
+/* crd.2 — player-facing pending contested-roll queue + its resolution
+   placeholder. A STANDALONE module by epic-crd Decision 3, but the row chrome
+   itself is shared rather than forked: .cq-row is grouped into the
+   .oaq-queue-row rule above instead of duplicating its body, and the queue
+   reuses .stm-audit-* (shell), .oaq-queue-list/-name/-actions, .dtl-badge,
+   .derived-note and .ch-* (error, pool rows, buttons) unchanged. Everything
+   below is only what genuinely did not exist: a tappable row, a row icon, the
+   per-row "which of my characters" label, and the resolved-but-recent state. */
+.cq-row { width: 100%; background: none; border: 0; font: inherit; color: inherit; text-align: left; border-radius: var(--radius-sm); cursor: pointer; gap: 10px; }
+.cq-row:hover { background: var(--surf2); }
+.cq-row-icon { display: inline-flex; align-items: center; width: 16px; height: 16px; flex-shrink: 0; color: var(--txt3); }
+.cq-row-icon svg { width: 100%; height: 100%; fill: none; stroke: currentColor; stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.cq-target { font-family: var(--fl); font-size: 10px; letter-spacing: .06em; text-transform: uppercase; color: var(--accent); white-space: nowrap; }
+/* Left visible for one poll tick so the list never rewrites itself under the
+   player's thumb; dropped on the next tick. Not tappable, and it carries no
+   challenge id, so the delegated router cannot pick it up either. */
+.cq-row-resolved { opacity: .5; cursor: default; }
+.cq-row-resolved:hover { background: none; }
+/* The resolution placeholder is a full-width page, not the modal the .ch-*
+   detail rows were written for, so it needs its own column rhythm and a
+   readable measure. Without it the prose, the detail rows and the reference
+   line collide, and the action button goes full-bleed across a desktop pane. */
+.cq-resolve-body { display: flex; flex-direction: column; gap: 14px; max-width: 520px; }
+/* .derived-note carries an 8px inline pad for its usual inline/chip context;
+   as a standalone line here that reads as a stray indent. */
+.cq-ref { margin: 0; padding-left: 0; padding-right: 0; }
+.cq-actions { margin-top: 4px; }
+/* Phone (≤599px, the same breakpoint #bnav and the Status ranking drawer use).
+   Measured defect, not a guess: at 390px the non-shrinking .oaq-queue-actions
+   cluster (roll badge + nowrap "Defending as ..." + a 19-character timestamp)
+   is wider than the row on its own, so the flexible .oaq-queue-name collapsed
+   to 0px and the trailing metadata was clipped by .tab's overflow-x:hidden —
+   the player lost the challenger's identity, which is the one thing the row
+   exists to tell them. Fixed by giving the cluster its own line under the name
+   instead of shrinking either of them: the name keeps a real column, and the
+   metadata wraps rather than running off the edge. */
+@media (max-width: 599px) {
+  .cq-row { flex-wrap: wrap; row-gap: 4px; }
+  .cq-row .oaq-queue-name { flex: 1 1 auto; }
+  .cq-row .oaq-queue-actions { flex: 1 0 100%; flex-wrap: wrap; justify-content: flex-start; min-width: 0; padding-left: 26px; }
+  .cq-row .cq-target { white-space: normal; }
+}
 
 /* HoS interactive actions */
 .office-budget-line { font-family: var(--fb); font-size: 14px; color: var(--txt); margin-bottom: 12px; }

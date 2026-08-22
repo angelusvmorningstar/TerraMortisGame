@@ -2,9 +2,17 @@
 id: nav.6
 epic: unified-nav-polish
 group: E
-status: needs-design
+status: superseded
 priority: deferred
 ---
+
+> **SUPERSEDED (2026-08-22, via crd.1).** This story describes an ST-only inline defender-picker
+> popup and predates the player-driven direction entirely. It is replaced by
+> `specs/epic-crd-contested-roll-defence.md` (Epic CRD — Contested Roll Defence), which gives the
+> DEFENDING PLAYER their own interactive resolution screen instead of an ST-only picker. Never
+> implemented — was still `needs-design`/`deferred` when superseded, despite `sprint-status.yaml`
+> incorrectly marking it `done` alongside the rest of Epic Unified Nav Polish (corrected as part of
+> crd.1's own AC9).
 
 # Story nav.6: Contested Roll — Inline Defender Picker (DESIGN REQUIRED)
 

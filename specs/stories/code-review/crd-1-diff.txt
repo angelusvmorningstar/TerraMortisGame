@@ -1,0 +1,620 @@
+diff --git a/server/index.js b/server/index.js
+index 414ae0f8..6b7b278a 100644
+--- a/server/index.js
++++ b/server/index.js
+@@ -262,6 +262,53 @@ async function start() {
+         partialFilterExpression: { request_type: 'status_action', status: 'pending' },
+       },
+     );
++    // Ensure the defender-queue compound index on contested_roll_requests
++    // (crd.1) — contested-rolls.js's GET /mine filters on target_character_id
++    // + status and sorts by created_at descending. Until crd.1 the ONLY index
++    // on this collection was the status_action partial unique one above, so a
++    // player's queue poll (every 10s, 30+ players at real table scale) was an
++    // unindexed scan across every historical challenge ever recorded.
++    // Not awaited, and deliberately not unique: it constrains nothing, so
++    // unlike the game_sessions.chapter_id index below it cannot reject at
++    // build time on live data.
++    getDb().collection('contested_roll_requests').createIndex(
++      { target_character_id: 1, status: 1, created_at: -1 },
++      { name: 'crd1_defender_queue', background: true },
++    );
++    // Ensure the terminal-status TTL index on contested_roll_requests (crd.1).
++    // Nothing has ever expired records in this collection; resolved/declined/
++    // voided documents accumulate for the life of the campaign. session_logs
++    // (written by contested-rolls.js's own accept path) carries the durable
++    // audit record, so no terminal request needs indefinite retention here.
++    // Retention: 30 days — long enough to cover a game's own post-session
++    // review window at this project's session cadence, short enough that the
++    // collection stays bounded across a whole campaign.
++    //
++    // The partial filter is on status alone, so it also covers terminal
++    // status_action records sharing this collection. That is safe and
++    // intended: office_actions holds the durable applied-action log, oaq.3's
++    // approval queue reads status:'pending' only, and oaq.2's "already acted
++    // on this target this session" dedupe read is scoped to the CURRENT
++    // game_session_id, whose records are days old, never 30+.
++    //
++    // KNOWN LIMITATION, deliberately not fixed here: MongoDB's TTL monitor
++    // only expires documents whose indexed field holds a BSON Date. Every
++    // writer on this collection (contested-rolls.js AND office-actions.js)
++    // stores `new Date().toISOString()` — a string — so this index is correct
++    // and idempotent but reaps nothing until updated_at becomes a real Date.
++    // Converting it is a cross-route data-shape change plus a backfill of
++    // every existing document, which crd.1 explicitly excludes. Flagged for a
++    // follow-up story; see crd-1-contested-roll-request-shape.test.js's own
++    // "DOCUMENTED LIMITATION" test, which fails the day updated_at changes.
++    getDb().collection('contested_roll_requests').createIndex(
++      { updated_at: 1 },
++      {
++        name: 'crd1_terminal_status_ttl',
++        background: true,
++        expireAfterSeconds: 2592000,
++        partialFilterExpression: { status: { $in: ['resolved', 'declined', 'voided'] } },
++      },
++    );
+     // Ensure partial unique index on game_sessions.chapter_id (CM-6, folded into cm-4 per
+     // cycle-model.md §11a step 6) — makes the confirmed-always-1:1 session/Chapter invariant
+     // (Angelus, 2026-08-16) a database constraint rather than a convention.
+diff --git a/server/routes/contested-rolls.js b/server/routes/contested-rolls.js
+index c0f8882d..8ba4dad7 100644
+--- a/server/routes/contested-rolls.js
++++ b/server/routes/contested-rolls.js
+@@ -19,8 +19,15 @@ router.post('/', validate(contestedRollRequestSchema), async (req, res) => {
+     return res.status(403).json({ error: 'FORBIDDEN', message: 'Character does not belong to you' });
+   }
+ 
++  // crd.1: request_type is set explicitly, AFTER the req.body spread, so the
++  // route is always the authority on it. Before this story a plain contested
++  // roll carried NO request_type at all, and every guard against Status
++  // Actions sharing this collection worked only because absence happens to
++  // satisfy `$ne: 'status_action'` — the same implicit-discriminator
++  // fragility that produced the oaq.3 void-orphaning bug (see PUT /:id/void).
+   const doc = {
+     ...req.body,
++    request_type: 'contested_roll',
+     status:     'pending',
+     outcome:    null,
+     created_at: new Date().toISOString(),
+@@ -37,8 +44,21 @@ router.get('/mine', async (req, res) => {
+   const charIds = (req.user.character_ids || []).map(id => String(id));
+   if (!charIds.length) return res.json([]);
+ 
++  // crd.1 route audit: this query had NO request_type clause at all. It was
++  // safe only by accident — office-actions.js writes `target_id`, not
++  // `target_character_id`, so a Status Action simply never matched the field
++  // name. Any future writer adding a target_character_id to a status_action
++  // (or a fourth request_type sharing this collection) would have leaked
++  // straight into a player's own queue. Scoped positively rather than as
++  // `$ne: 'status_action'`: `$in: [null, 'contested_roll']` matches legacy
++  // documents (request_type absent — everything written before crd.1) and new
++  // explicit ones, and nothing else.
+   const docs = await col()
+-    .find({ target_character_id: { $in: charIds }, status: 'pending' })
++    .find({
++      target_character_id: { $in: charIds },
++      status: 'pending',
++      request_type: { $in: [null, 'contested_roll'] },
++    })
+     .sort({ created_at: -1 })
+     .toArray();
+ 
+diff --git a/server/schemas/contested_roll_request.schema.js b/server/schemas/contested_roll_request.schema.js
+index da079e36..3163c0b8 100644
+--- a/server/schemas/contested_roll_request.schema.js
++++ b/server/schemas/contested_roll_request.schema.js
+@@ -4,6 +4,12 @@
+  *
+  * Validated on POST (challenge creation). Status, outcome, timestamps
+  * are set server-side and not included in this schema.
++ *
++ * crd.1: this collection is shared with Status Actions (`request_type:
++ * 'status_action'`), which bypass this schema entirely via a direct insert in
++ * office-actions.js. Contested rolls now carry their own explicit
++ * `request_type: 'contested_roll'` discriminator rather than being identified
++ * by the ABSENCE of one — see the note on that property below.
+  */
+ 
+ export const contestedRollRequestSchema = {
+@@ -17,7 +23,6 @@ export const contestedRollRequestSchema = {
+     'target_character_name',
+     'roll_type',
+     'challenger_pool',
+-    'defender_pool',
+   ],
+   additionalProperties: false,
+   properties: {
+@@ -25,9 +30,32 @@ export const contestedRollRequestSchema = {
+     challenger_character_name: { type: 'string', minLength: 1 },
+     target_character_id:       { type: 'string', minLength: 1 },
+     target_character_name:     { type: 'string', minLength: 1 },
++    // crd.1: NOT required. Omitting it is still valid for any caller that
++    // doesn't set it; contested-rolls.js's own POST / always sets it
++    // explicitly on the inserted document (mirroring office-actions.js's
++    // `request_type: 'status_action'`), so the enum here exists to stop a
++    // client asserting any OTHER type through this route.
++    request_type: { type: 'string', enum: ['contested_roll'] },
++    // roll_type categorises the CONTEST for session-log/display purposes.
++    // It is a different axis from defender_aspect below (which Resistance
++    // Attribute feeds the defender's pool) — do not derive one from the other.
+     roll_type:    { type: 'string', enum: ['territory', 'social', 'resistance', 'custom'] },
+     challenger_pool: { type: 'integer', minimum: 0, maximum: 30 },
++    // crd.1: no longer REQUIRED. It used to be attacker-submitted at creation
++    // time, which meant the opposing player asserted the defender's own
++    // resistance number with no defender input at any point before the dice
++    // were rolled. It becomes server-computed at resolution time (crd.3a); a
++    // pending challenge between creation and resolution genuinely has none.
+     defender_pool:   { type: 'integer', minimum: 0, maximum: 30 },
++    // crd.1: the defender's SUBMITTED resolution choices. All optional at
++    // creation — they are only ever populated later, by crd.3a's resolve
++    // endpoint, never by POST /. Listed here (rather than left to fall
++    // through) because additionalProperties: false still holds.
++    defender_aspect:    { type: 'string', enum: ['mental', 'social', 'physical'] },
++    // Boolean, not an integer: the real Willpower rule caps a spend at one
++    // point per action, so the only question is whether it was spent.
++    defender_wp_spent:  { type: 'boolean' },
++    defender_merit_ids: { type: 'array', items: { type: 'string' } },
+     power_name:   { type: 'string' },
+   },
+ };
+diff --git a/server/tests/crd-1-contested-roll-request-shape.test.js b/server/tests/crd-1-contested-roll-request-shape.test.js
+new file mode 100644
+index 00000000..ec3205c5
+--- /dev/null
++++ b/server/tests/crd-1-contested-roll-request-shape.test.js
+@@ -0,0 +1,455 @@
++/**
++ * crd.1 — real behavioural coverage for the contested-roll data-lock /
++ * schema-hardening story (Epic CRD, specs/epic-crd-contested-roll-defence.md).
++ *
++ *   AC1 — `defender_pool` is no longer REQUIRED at creation (the attacker no
++ *         longer asserts the defender's dice pool); `challenger_pool` still is.
++ *   AC2 — the schema knows about `request_type` and `POST /` sets it to
++ *         'contested_roll' on every document it creates.
++ *   AC3 — the three defender-resolution fields (`defender_aspect`,
++ *         `defender_wp_spent`, `defender_merit_ids`) exist, correctly typed,
++ *         and are optional at creation.
++ *   AC4 — covered together with AC2 (same route change).
++ *   AC5 — `_findChallenge` (accept/decline) and `PUT /:id/void` include BOTH
++ *         legacy request_type-absent documents AND new explicit
++ *         'contested_roll' documents, and still exclude 'status_action'.
++ *   AC6 — `GET /mine` is served by the compound index, and is scoped so a
++ *         'status_action' document can never leak into a player's queue.
++ *   AC7 — the terminal-status TTL index exists with the agreed retention.
++ *
++ * AC8 is a one-time live read-only spot-check recorded in the story's Dev
++ * Agent Record, not an automated test. AC9 is a documentation edit.
++ *
++ * Follows oaq-2-pending-status-actions.test.js exactly: real Supertest
++ * requests against the mounted test app + tm_game_test, prefixed fixtures,
++ * describe.skipIf(!dbAvailable) for a clean skip when MongoDB is unreachable.
++ *
++ * DB-backed: real MongoDB required. See db-setup.js.
++ */
++
++import { describe, it, expect, beforeAll, afterAll } from 'vitest';
++import request from 'supertest';
++import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
++import { setupDb, teardownDb, isDbAvailable } from './helpers/db-setup.js';
++import { getCollection } from '../db.js';
++import { ObjectId } from 'mongodb';
++
++const dbAvailable = await isDbAvailable();
++
++let app;
++const NAME_PREFIX = 'CRD-1 Probe';
++
++// Stable, obviously-synthetic character ids. POST / only checks these against
++// req.user.character_ids — it never reads the characters collection — so no
++// character fixtures are needed for the request-shape ACs.
++const CHALLENGER_ID = '000000000000000000000c01';
++const TARGET_ID     = '000000000000000000000d01';
++
++async function cleanup() {
++  await getCollection('contested_roll_requests').deleteMany({
++    $or: [
++      { challenger_character_name: { $regex: `^${NAME_PREFIX}` } },
++      { target_character_name:     { $regex: `^${NAME_PREFIX}` } },
++      { actor_name:                { $regex: `^${NAME_PREFIX}` } },
++    ],
++  });
++}
++
++function validBody(overrides = {}) {
++  return {
++    challenger_character_id:   CHALLENGER_ID,
++    challenger_character_name: `${NAME_PREFIX} Challenger`,
++    target_character_id:       TARGET_ID,
++    target_character_name:     `${NAME_PREFIX} Target`,
++    roll_type:                 'social',
++    challenger_pool:           7,
++    ...overrides,
++  };
++}
++
++function post(body, userHeader = playerUser([CHALLENGER_ID])) {
++  return request(app).post('/api/contested_roll_requests').set('X-Test-User', userHeader).send(body);
++}
++
++beforeAll(async () => {
++  if (!dbAvailable) return;
++  await setupDb();
++  app = createTestApp();
++  await cleanup();
++});
++
++afterAll(async () => {
++  if (!dbAvailable) return;
++  await cleanup();
++  await teardownDb();
++});
++
++describe.skipIf(!dbAvailable)('crd.1 AC1 — defender_pool is optional at creation', () => {
++  it('accepts a challenge with NO defender_pool at all (the attacker no longer asserts it)', async () => {
++    const res = await post(validBody());
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.defender_pool, 'a pending challenge genuinely has no defender pool yet').toBeUndefined();
++    expect(res.body.challenger_pool).toBe(7);
++    expect(res.body.status).toBe('pending');
++  });
++
++  it('still REQUIRES challenger_pool — the attacker\'s own pool is unaffected by this epic', async () => {
++    const body = validBody();
++    delete body.challenger_pool;
++    const res = await post(body);
++    expect(res.status).toBe(400);
++    expect(res.body.error).toBe('VALIDATION_ERROR');
++  });
++
++  it('still validates defender_pool\'s range when it IS supplied', async () => {
++    const res = await post(validBody({ defender_pool: 31 }));
++    expect(res.status).toBe(400);
++    expect(res.body.error).toBe('VALIDATION_ERROR');
++  });
++
++  it('still accepts an in-range defender_pool when supplied', async () => {
++    const res = await post(validBody({ defender_pool: 4 }));
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.defender_pool).toBe(4);
++  });
++});
++
++describe.skipIf(!dbAvailable)('crd.1 AC2/AC4 — request_type is an explicit, known field', () => {
++  it('POST / sets request_type: \'contested_roll\' on every document it creates', async () => {
++    const res = await post(validBody());
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.request_type).toBe('contested_roll');
++
++    const stored = await getCollection('contested_roll_requests').findOne({ _id: new ObjectId(res.body._id) });
++    expect(stored.request_type, 'the stored document, not just the response body').toBe('contested_roll');
++  });
++
++  it('accepts an explicit request_type: \'contested_roll\' in the body (additionalProperties: false must not reject it)', async () => {
++    const res = await post(validBody({ request_type: 'contested_roll' }));
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.request_type).toBe('contested_roll');
++  });
++
++  it('rejects any other request_type — a client cannot smuggle a status_action through this route', async () => {
++    const res = await post(validBody({ request_type: 'status_action' }));
++    expect(res.status).toBe(400);
++    expect(res.body.error).toBe('VALIDATION_ERROR');
++  });
++
++  it('a client-supplied request_type can never override the server\'s own value', async () => {
++    // The enum makes 'contested_roll' the only accepted input, but the route
++    // must still be the authority: the explicit set has to come AFTER the
++    // req.body spread, not before it.
++    const src = await import('node:fs').then(fs =>
++      fs.promises.readFile(new URL('../routes/contested-rolls.js', import.meta.url), 'utf8'));
++    const docBlock = src.slice(src.indexOf('const doc = {'), src.indexOf('const result'));
++    expect(docBlock.indexOf('...req.body')).toBeLessThan(docBlock.indexOf('request_type'));
++  });
++});
++
++describe.skipIf(!dbAvailable)('crd.1 AC3 — the defender-resolution fields exist and are correctly typed', () => {
++  it('accepts all three new fields together, correctly shaped', async () => {
++    const res = await post(validBody({
++      defender_aspect:    'mental',
++      defender_wp_spent:  true,
++      defender_merit_ids: ['indomitable', 'closed-book'],
++    }));
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.defender_aspect).toBe('mental');
++    expect(res.body.defender_wp_spent).toBe(true);
++    expect(res.body.defender_merit_ids).toEqual(['indomitable', 'closed-book']);
++  });
++
++  it('all three are OPTIONAL — a challenge created without them is still valid', async () => {
++    const res = await post(validBody());
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.defender_aspect).toBeUndefined();
++    expect(res.body.defender_wp_spent).toBeUndefined();
++    expect(res.body.defender_merit_ids).toBeUndefined();
++  });
++
++  it.each(['mental', 'social', 'physical'])('accepts defender_aspect: %s', async (aspect) => {
++    const res = await post(validBody({ defender_aspect: aspect }));
++    expect(res.status, JSON.stringify(res.body)).toBe(201);
++    expect(res.body.defender_aspect).toBe(aspect);
++  });
++
++  it('rejects an off-enum defender_aspect', async () => {
++    const res = await post(validBody({ defender_aspect: 'spiritual' }));
++    expect(res.status).toBe(400);
++  });
++
++  it('rejects a NUMERIC defender_wp_spent — the real rule caps a spend at one point per action, so it is a boolean', async () => {
++    const res = await post(validBody({ defender_wp_spent: 2 }));
++    expect(res.status).toBe(400);
++  });
++
++  it('rejects a non-array defender_merit_ids, and a non-string member', async () => {
++    expect((await post(validBody({ defender_merit_ids: 'indomitable' }))).status).toBe(400);
++    expect((await post(validBody({ defender_merit_ids: [1, 2] }))).status).toBe(400);
++  });
++
++  it('still rejects a genuinely unknown field — additionalProperties: false must still hold', async () => {
++    const res = await post(validBody({ defender_smuggled_bonus: 5 }));
++    expect(res.status).toBe(400);
++    expect(res.body.errors.some(e => e.property === 'defender_smuggled_bonus')).toBe(true);
++  });
++});
++
++// ── AC5: the three document shapes that share this collection ────────────────
++// Inserted directly, not through POST /, because two of them cannot be created
++// through this router at all: the LEGACY shape (no request_type field
++// whatsoever) is what every contested roll written before crd.1 looks like and
++// is no longer producible, and the status_action shape is written by
++// office-actions.js.
++async function seedShape(shape, overrides = {}) {
++  const base = {
++    challenger_character_id:   CHALLENGER_ID,
++    challenger_character_name: `${NAME_PREFIX} Challenger`,
++    target_character_id:       TARGET_ID,
++    target_character_name:     `${NAME_PREFIX} Target`,
++    roll_type:       'social',
++    challenger_pool: 5,
++    defender_pool:   3,
++    status:     'pending',
++    outcome:    null,
++    created_at: new Date().toISOString(),
++    updated_at: new Date().toISOString(),
++    ...overrides,
++  };
++  if (shape === 'new')           base.request_type = 'contested_roll';
++  if (shape === 'status_action') {
++    base.request_type = 'status_action';
++    // oaq.2's partial UNIQUE index on (game_session_id, actor_id, target_id)
++    // is scoped to pending status_actions and is created against the shared
++    // tm_game_test database by oaq-2-pending-status-actions.test.js. Without
++    // distinct values here, two status_action fixtures in this file would both
++    // key on (null, null, null) and collide with E11000 — a cross-file
++    // artefact of the shared test DB, not a property of the code under test.
++    const uniq = `${Date.now()}_${Math.random()}`;
++    base.game_session_id = overrides.game_session_id ?? `crd1-${uniq}`;
++    base.actor_id        = overrides.actor_id        ?? `crd1-actor-${uniq}`;
++    base.target_id       = overrides.target_id       ?? `crd1-target-${uniq}`;
++  }
++  // shape === 'legacy' deliberately sets no request_type at all.
++  const { insertedId } = await getCollection('contested_roll_requests').insertOne(base);
++  return String(insertedId);
++}
++
++const defenderUser = () => playerUser([TARGET_ID]);
++
++describe.skipIf(!dbAvailable)('crd.1 AC5 — _findChallenge and PUT /:id/void across all three document shapes', () => {
++  it.each([['legacy (request_type absent)', 'legacy'], ['new (request_type: contested_roll)', 'new']])(
++    'accept resolves a %s contested roll', async (_label, shape) => {
++      const id = await seedShape(shape);
++      const res = await request(app).put(`/api/contested_roll_requests/${id}/accept`).set('X-Test-User', defenderUser());
++      expect(res.status, JSON.stringify(res.body)).toBe(200);
++      expect(res.body.status).toBe('resolved');
++      expect(res.body.outcome).toBeTruthy();
++    });
++
++  it.each([['legacy (request_type absent)', 'legacy'], ['new (request_type: contested_roll)', 'new']])(
++    'decline declines a %s contested roll', async (_label, shape) => {
++      const id = await seedShape(shape);
++      const res = await request(app).put(`/api/contested_roll_requests/${id}/decline`).set('X-Test-User', defenderUser());
++      expect(res.status, JSON.stringify(res.body)).toBe(200);
++      const stored = await getCollection('contested_roll_requests').findOne({ _id: new ObjectId(id) });
++      expect(stored.status).toBe('declined');
++    });
++
++  it.each([['legacy (request_type absent)', 'legacy'], ['new (request_type: contested_roll)', 'new']])(
++    'void voids a %s contested roll', async (_label, shape) => {
++      const id = await seedShape(shape);
++      const res = await request(app).put(`/api/contested_roll_requests/${id}/void`).set('X-Test-User', stUser());
++      expect(res.status, JSON.stringify(res.body)).toBe(200);
++      expect(res.body.status).toBe('voided');
++    });
++
++  it('accept, decline and void ALL refuse a status_action document (404), leaving it untouched', async () => {
++    // oaq.3's own regression, re-proved here because crd.1 adds a third
++    // possible request_type value to the same collection: a status_action
++    // must stay reachable only by office-actions.js's own lifecycle.
++    for (const verb of ['accept', 'decline', 'void']) {
++      const id = await seedShape('status_action', { actor_name: `${NAME_PREFIX} Actor` });
++      const user = verb === 'void' ? stUser() : defenderUser();
++      const res = await request(app).put(`/api/contested_roll_requests/${id}/${verb}`).set('X-Test-User', user);
++      expect(res.status, `${verb} must not touch a status_action document`).toBe(404);
++      const stored = await getCollection('contested_roll_requests').findOne({ _id: new ObjectId(id) });
++      expect(stored.status, `${verb} must leave the status_action record pending`).toBe('pending');
++    }
++  });
++});
++
++describe.skipIf(!dbAvailable)('crd.1 AC5/AC6 — GET /mine is scoped by request_type, not by field-name coincidence', () => {
++  it('returns BOTH legacy and new-shaped pending contested rolls targeting me', async () => {
++    await cleanup();
++    const legacyId = await seedShape('legacy');
++    const newId    = await seedShape('new');
++
++    const res = await request(app).get('/api/contested_roll_requests/mine').set('X-Test-User', defenderUser());
++    expect(res.status).toBe(200);
++    const ids = res.body.map(d => String(d._id));
++    expect(ids).toContain(legacyId);
++    expect(ids).toContain(newId);
++  });
++
++  it('never returns a status_action document, even one that DOES carry target_character_id', async () => {
++    // Today's protection is accidental: office-actions.js writes `target_id`,
++    // not `target_character_id`, so a status_action simply never matches this
++    // query's field name. That is the same "harmless only by accident" shape
++    // that produced the void-orphaning bug — any future writer adding a
++    // target_character_id to a status_action would leak it straight into a
++    // player's own queue. Scoped explicitly instead.
++    await cleanup();
++    const leakId = await seedShape('status_action', {
++      target_character_id: TARGET_ID,
++      actor_name: `${NAME_PREFIX} Actor`,
++    });
++
++    const res = await request(app).get('/api/contested_roll_requests/mine').set('X-Test-User', defenderUser());
++    expect(res.status).toBe(200);
++    const ids = res.body.map(d => String(d._id));
++    expect(ids, 'a Status Action must never appear in a player\'s contested-roll queue').not.toContain(leakId);
++  });
++
++  it('never returns a HYPOTHETICAL FUTURE request_type either — the filter is positive, not a negation of status_action', async () => {
++    // Discriminates the chosen `$in: [null, 'contested_roll']` filter from the
++    // `$ne: 'status_action'` alternative the story allowed: a fourth type
++    // sharing this collection later must not leak by default.
++    await cleanup();
++    const futureId = await seedShape('legacy', { request_type: 'some_future_request' });
++
++    const res = await request(app).get('/api/contested_roll_requests/mine').set('X-Test-User', defenderUser());
++    expect(res.status).toBe(200);
++    expect(res.body.map(d => String(d._id))).not.toContain(futureId);
++  });
++
++  it('only returns PENDING requests, and only ones targeting the caller\'s own characters', async () => {
++    await cleanup();
++    const pendingId  = await seedShape('new');
++    await seedShape('new', { status: 'resolved' });
++    await seedShape('new', { target_character_id: '000000000000000000000d99' });
++
++    const res = await request(app).get('/api/contested_roll_requests/mine').set('X-Test-User', defenderUser());
++    expect(res.status).toBe(200);
++    expect(res.body.map(d => String(d._id))).toEqual([pendingId]);
++  });
++});
++
++// ── AC6/AC7: indexes ────────────────────────────────────────────────────────
++// Boot-time index creation lives in server/index.js, which cannot be imported
++// here (it calls start() and binds a port). So these are covered from two
++// directions: the DECLARATION is checked against server/index.js's real
++// source, and the SPEC is checked behaviourally — the exact same index
++// definitions are built against tm_game_test and the real GET /mine query is
++// explained against them.
++
++const CRD1_QUEUE_INDEX = {
++  key:  { target_character_id: 1, status: 1, created_at: -1 },
++  opts: { name: 'crd1_defender_queue', background: true },
++};
++const CRD1_TTL_INDEX = {
++  key:  { updated_at: 1 },
++  opts: {
++    name: 'crd1_terminal_status_ttl',
++    background: true,
++    expireAfterSeconds: 2592000, // 30 days
++    partialFilterExpression: { status: { $in: ['resolved', 'declined', 'voided'] } },
++  },
++};
++
++function indexJsSource() {
++  return import('node:fs').then(fs =>
++    fs.promises.readFile(new URL('../index.js', import.meta.url), 'utf8'));
++}
++
++/** The createIndex(...) call bodies server/index.js makes on this collection. */
++function contestedRollIndexBlocks(src) {
++  const blocks = [];
++  const marker = "collection('contested_roll_requests').createIndex(";
++  let at = src.indexOf(marker);
++  while (at !== -1) {
++    const end = src.indexOf('\n    );', at);
++    blocks.push(src.slice(at, end).replace(/\s+/g, ' '));
++    at = src.indexOf(marker, at + 1);
++  }
++  return blocks;
++}
++
++describe.skipIf(!dbAvailable)('crd.1 AC6 — GET /mine is served by a compound index', () => {
++  it('server/index.js declares the { target_character_id, status, created_at } compound index on boot', async () => {
++    const blocks = contestedRollIndexBlocks(await indexJsSource());
++    const queue = blocks.filter(b => b.includes('target_character_id'));
++    expect(queue.length, 'exactly one boot-time index keyed on target_character_id').toBe(1);
++    expect(queue[0]).toContain('target_character_id: 1');
++    expect(queue[0]).toContain('status: 1');
++    expect(queue[0]).toContain('created_at: -1');
++    expect(queue[0], 'the oaq.2 partial-unique index must not be disturbed').not.toContain('unique: true');
++  });
++
++  it('the real GET /mine query plans as an index scan against that index, not a collection scan', async () => {
++    const col = getCollection('contested_roll_requests');
++    await col.createIndex(CRD1_QUEUE_INDEX.key, CRD1_QUEUE_INDEX.opts);
++
++    // The same filter/sort contested-rolls.js's GET /mine issues.
++    const plan = await col.find({
++      target_character_id: { $in: [TARGET_ID] },
++      status: 'pending',
++      request_type: { $in: [null, 'contested_roll'] },
++    }).sort({ created_at: -1 }).explain('queryPlanner');
++
++    const stages = JSON.stringify(plan.queryPlanner.winningPlan);
++    expect(stages, 'GET /mine must not fall back to a COLLSCAN at table scale').not.toContain('COLLSCAN');
++    expect(stages).toContain(CRD1_QUEUE_INDEX.opts.name);
++  });
++
++  it('the oaq.2 partial unique index is still declared and untouched', async () => {
++    const blocks = contestedRollIndexBlocks(await indexJsSource());
++    const oaq2 = blocks.filter(b => b.includes("request_type: 'status_action'"));
++    expect(oaq2.length).toBe(1);
++    expect(oaq2[0]).toContain('unique: true');
++  });
++});
++
++describe.skipIf(!dbAvailable)('crd.1 AC7 — terminal-status TTL index', () => {
++  it('server/index.js declares a 30-day TTL index on updated_at, partial-filtered to terminal statuses', async () => {
++    const blocks = contestedRollIndexBlocks(await indexJsSource());
++    const ttl = blocks.filter(b => b.includes('expireAfterSeconds'));
++    expect(ttl.length, 'exactly one boot-time TTL index on this collection').toBe(1);
++    expect(ttl[0]).toContain('updated_at: 1');
++    expect(ttl[0], '30 days — agreed retention window, see the story AC7').toContain('expireAfterSeconds: 2592000');
++    for (const status of ['resolved', 'declined', 'voided']) expect(ttl[0]).toContain(`'${status}'`);
++    expect(ttl[0], 'a TTL index must never also be unique').not.toContain('unique: true');
++  });
++
++  it('that index definition is accepted by MongoDB and reports the expected TTL + partial filter', async () => {
++    const col = getCollection('contested_roll_requests');
++    await col.createIndex(CRD1_TTL_INDEX.key, CRD1_TTL_INDEX.opts);
++
++    const indexes = await col.indexes();
++    const ttl = indexes.find(i => i.name === CRD1_TTL_INDEX.opts.name);
++    expect(ttl, 'the TTL index must exist').toBeTruthy();
++    expect(ttl.key).toEqual({ updated_at: 1 });
++    expect(ttl.expireAfterSeconds).toBe(2592000);
++    expect(ttl.partialFilterExpression).toEqual({ status: { $in: ['resolved', 'declined', 'voided'] } });
++  });
++
++  it('DOCUMENTED LIMITATION: updated_at is still written as an ISO STRING, so the TTL reaper is inert today', async () => {
++    // MongoDB's TTL monitor only expires documents whose indexed field holds a
++    // BSON Date (or an array of them). Every writer on this collection stores
++    // `new Date().toISOString()` — a string — so the index above is correct,
++    // idempotent and harmless, but deletes nothing until updated_at becomes a
++    // real Date. Converting it is a data-shape change across both route
++    // families (contested-rolls.js AND office-actions.js) plus a backfill of
++    // every existing document, which crd.1 explicitly excludes ("NOT a
++    // live-data migration or backfill"). Flagged for a follow-up story.
++    //
++    // If this test ever fails, updated_at has become a Date: the TTL is now
++    // genuinely live — re-read the retention window and this note rather than
++    // just deleting the assertion.
++    const res = await post(validBody());
++    expect(res.status).toBe(201);
++    const stored = await getCollection('contested_roll_requests').findOne({ _id: new ObjectId(res.body._id) });
++    expect(typeof stored.updated_at, 'still an ISO string — see this test\'s own comment').toBe('string');
++  });
++});

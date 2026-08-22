@@ -17,8 +17,10 @@
  * addEventListener calls.
  *
  * Refresh: 10-second poll against GET /pending, mirroring the existing
- * pattern in public/js/game/challenge-notification.js (same
- * contested_roll_requests collection family). Race safety already exists
+ * pattern in the contested-roll poller (the modal module this originally
+ * cited was retired by crd.2; its successor is
+ * public/js/game/pending-queue.js, same contested_roll_requests collection
+ * family, same POLL_MS). Race safety already exists
  * server-side (both accept/decline 409 if the record is no longer pending);
  * the poll is purely so a row resolved by another ST disappears without a
  * manual reload. Polling is skipped while this tab isn't the active one —
