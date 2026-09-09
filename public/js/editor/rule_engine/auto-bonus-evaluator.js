@@ -36,8 +36,15 @@ export function applyAutoBonusRulesFromDb(c, { grants = [] } = {}) {
     const hasMerit = (c.merits || []).some(m => m.name === rule.source);
     if (!hasMerit) continue;
 
-    const amount = _computeAmount(c, rule);
+    let amount = _computeAmount(c, rule);
     if (amount <= 0) continue;
+    // Fix (live bug report, 2026-09-09): rating_of_partner_merit sums cp+xp across EVERY
+    // instance of each partner merit name. That was fine pre-Sway-merge (a character held one
+    // or two matching instances); post-merge "Sway" is a broad umbrella a character can hold
+    // many separate instances of (Legal/Police/Underworld/Transportation...), so the same
+    // formula now over-grants. cap_at is the ST's own explicit ceiling on this specific rule's
+    // output, not a general clamp — most auto_bonus rules have no cap_at and are unaffected.
+    if (typeof rule.cap_at === 'number' && amount > rule.cap_at) amount = rule.cap_at;
 
     // Apply to the target merit instance (first match — auto-bonus targets a
     // single merit by name; if multiple instances exist, pick the first).

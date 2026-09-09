@@ -42,6 +42,11 @@ export const ruleGrantSchema = {
     notes:      { type: 'string' },
     created_at: { type: 'string' },
     updated_at: { type: 'string' },
+    // Fix (live bug report, 2026-09-09 — Friends with Benefits over-granting Feeding Grounds
+    // dots after the Sway merge widened what rating_of_partner_merit sums across): an optional
+    // ceiling on an auto_bonus grant's computed amount. Same shape as rule_skill_bonus's own
+    // cap_at, deliberately — same concept, same field name, no new convention invented.
+    cap_at: { type: 'integer', minimum: 1 },
 
     // ── N-1 / ADR-005 Rev 2 additions ──
     // `source_slug` is the canonical short identifier for the source (e.g. 'mci',
