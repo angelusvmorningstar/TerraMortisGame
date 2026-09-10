@@ -106,7 +106,13 @@ function unavailable(reason, httpStatus = 0, detail = null) {
  * `data` is passed through unreshaped and unnormalised - whatever TM Story
  * really sends, which is `content.feeding` (possibly partially or wholly
  * absent, on historical submissions) plus `lifecycle_state` and `status` from
- * the parent submission. Normalising historical documents is Story 12.5.
+ * the parent submission, plus `territory_influence` (Story 12.3: TM Story
+ * commit 18bbc23 added it as a FOURTH key, `content.territory_influence`
+ * verbatim or null - a sibling of `feeding`, not nested inside it, carrying
+ * `{ spends: [{ territory: { id, label }, amount }] }` on a current-format
+ * submission). No change was needed here for that: this function already
+ * returns the whole body verbatim. Normalising historical documents is
+ * Story 12.5.
  *
  * `reason` is one of:
  *   'bad-args'      - a missing character or cycle id; no request was made

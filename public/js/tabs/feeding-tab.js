@@ -8,13 +8,16 @@
  * States: loading → ready → rolled | no_submission (generic picker)
  *                 → rolled-from-form (Epic 12: the roll already happened in TM
  *                   Story's downtime form; read-only here, never re-rollable)
+ *
+ * Story 12.3 adds one thing that belongs to no state: a standing Influence +
+ * Willpower tally card, rendered in every state except loading.
  */
 
 import { apiGet, apiPut } from '../data/api.js';
 import { fetchStoryFeeding } from '../data/story-feeding.js';
 import { getFeedingCycle } from '../downtime/db.js';
 import { esc, displayName, hasAoE } from '../data/helpers.js';
-import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecStr, calcVitaeMax } from '../data/accessors.js';
+import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecStr, calcVitaeMax, calcWillpowerMax } from '../data/accessors.js';
 import { FEED_METHODS, TERRITORY_DATA } from './downtime-data.js';
 import { SKILLS_MENTAL } from '../data/constants.js';
 import { isSTRole } from '../auth/discord.js';
@@ -70,6 +73,13 @@ let _liveTerrDocs = []; // cached from /api/territories — used by territory-ke
 // active cycle, fetched through Story 12.1's read-only client. Non-null ONLY
 // when it carries a real rollResult, which is what makes it authoritative.
 let storyFeeding = null;
+// Epic 12 (Story 12.3): the SAME fetch's fourth key, `territory_influence`
+// (`content.territory_influence` verbatim, or null). Deliberately captured
+// outside the rollResult precedence test below, because the tally card it
+// feeds is standing information that renders in every state, not just the
+// form-sourced one. Shape on a current-format submission (TM Story's own
+// content-shape.js `territoryInfluence`): { spends: [{ territory, amount }] }.
+let storyTerritoryInfluence = null;
 // The active cycle's _id as a string. Also the value of the tracker_state
 // idempotency marker written when a form-sourced roll's aggHealed is applied.
 let activeCycleId = null;
@@ -126,6 +136,7 @@ export async function renderFeedingTab(el, char) {
   currentSub = null;
   vitateTally = null;
   storyFeeding = null;
+  storyTerritoryInfluence = null;
   activeCycleId = null;
   trackerDoc = null;
 
@@ -210,6 +221,13 @@ export async function renderFeedingTab(el, char) {
   // still serves residual old-format data correctly.
   const storyRes = await fetchStoryFeeding(String(char._id), activeCycleId);
   if (currentChar !== charSnapshot) return;
+
+  // Story 12.3: the tally card's declared-spend figure comes off THIS response,
+  // not a second request. `fetchStoryFeeding` returns TM Story's whole body
+  // verbatim, so the fourth key is already here whichever branch runs below;
+  // a failed fetch (network, CORS, 404) leaves it null and the card degrades to
+  // current values alone.
+  storyTerritoryInfluence = storyRes?.ok ? (storyRes.data?.territory_influence ?? null) : null;
 
   if (storyRes?.ok && storyRes.data?.feeding?.rollResult) {
     storyFeeding = storyRes.data.feeding;
@@ -688,6 +706,73 @@ function renderVitaeTallyCard(tally, vessels = null) {
   return h;
 }
 
+/**
+ * Story 12.3: the Influence the player has DECLARED spending in this cycle's
+ * downtime form, summed off TM Story's `territory_influence.spends[]`.
+ *
+ * Returns null - not 0 - when there is no `territory_influence` at all (a draft,
+ * or a cycle predating TM Story's Story 11.3b), so the caller can leave the row
+ * out entirely rather than print a "0 declared" that looks like real data. An
+ * EMPTY `spends` array is a different thing: the section exists on the
+ * submission and records no spend, so 0 is the true figure and is shown.
+ *
+ * Absolute value, not signed sum: `amount` is signed only because it says which
+ * direction the ambience moves (positive improves, negative degrades). TM
+ * Story's own budget maths (`public/js/downtime-form/influence-budget.js`,
+ * `totalSpent`) charges 1 Influence per point EITHER WAY, so a signed sum would
+ * under-report, and a mix of +2 and -2 would report a spend of nothing at all.
+ */
+function declaredInfluenceSpend(ti) {
+  const spends = ti && Array.isArray(ti.spends) ? ti.spends : null;
+  if (!spends) return null;
+  return spends.reduce((sum, s) => {
+    const n = Number(s?.amount);
+    return sum + (Number.isFinite(n) ? Math.abs(Math.trunc(n)) : 0);
+  }, 0);
+}
+
+/**
+ * Story 12.3: the standing Influence + Willpower tally.
+ *
+ * Rendered in every state, alongside whatever the tab is otherwise showing:
+ * it is information about the character, not a step in the feeding flow.
+ *
+ * Both current figures come from the SAME `trackerRead()` the ST confirm panel
+ * already reads Influence from - one live tracker_state source, no second one
+ * invented here. Willpower is read and shown plainly: no spend itemisation for
+ * it exists anywhere in either app, so there is nothing to net it against.
+ *
+ * Influence is deliberately two separate, separately-labelled rows. The
+ * declared figure has NOT been taken off the current total: TM Story's own
+ * Story 11.3b ruled a territory-influence spend is "a declaration resolved at
+ * processing", never a live decrement, so presenting one as net of the other
+ * would misstate what the player has.
+ */
+function renderInfluenceWillpowerTally() {
+  if (!currentChar) return '';
+  const ts = trackerRead(String(currentChar._id));
+  const declared = declaredInfluenceSpend(storyTerritoryInfluence);
+
+  const wp = (ts && ts.willpower != null)
+    ? `${ts.willpower} / ${calcWillpowerMax(currentChar)}`
+    : 'Unavailable';
+  const inf = (ts && ts.inf != null)
+    ? `${ts.inf} / ${calcTotalInfluence(currentChar)}`
+    : 'Unavailable';
+
+  let h = '<div class="fvt-card feed-tally" id="feed-tally">';
+  h += '<div class="fvt-title">Influence and Willpower</div>';
+  h += `<div class="fvt-row"><span class="fvt-label">Willpower</span><span class="fvt-val" id="feed-tally-wp">${esc(wp)}</span></div>`;
+  h += `<div class="fvt-row"><span class="fvt-label">Influence (current)</span><span class="fvt-val" id="feed-tally-inf">${esc(inf)}</span></div>`;
+  if (declared !== null) {
+    h += '<div class="fvt-row"><span class="fvt-label">Influence declared this cycle (not yet processed)</span>';
+    h += `<span class="fvt-val" id="feed-tally-declared" data-declared="${declared}">${declared}</span></div>`;
+    h += '<p class="feeding-state-detail">Declared spending is not taken off the current total until your Storyteller processes the downtime.</p>';
+  }
+  h += '</div>';
+  return h;
+}
+
 function fvcConseqText(v) {
   if (v <= 2) return 'Safe';
   if (v === 3) return 'Drained';
@@ -891,6 +976,13 @@ function render() {
   const isST = isSTRole();
   let h = '<div class="feeding-wrap">';
   h += '<h3 class="feeding-title">Feeding: The Hunt</h3>';
+
+  // ── STANDING TALLY (Story 12.3) ──
+  // Deliberately outside every state branch below: it is standing information
+  // about the character, valid whether they have declared a method, already
+  // rolled here, or rolled in the downtime form. Skipped only while loading,
+  // when there is nothing fetched to report against.
+  if (feedingState !== 'loading') h += renderInfluenceWillpowerTally();
 
   // ── LOADING ──
   if (feedingState === 'loading') {
