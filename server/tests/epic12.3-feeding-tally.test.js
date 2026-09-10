@@ -189,6 +189,12 @@ globalThis.fetch = async (url, opts = {}) => {
       scenario.puts.push(JSON.parse(opts.body));
       return jsonRes({ ok: true });
     }
+    // A document (200), null (404 - genuinely no tracker document for this
+    // character yet), 'server-error' (500), or 'network' (the fetch itself
+    // fails). External review (12.3, High): the last two mean the real state is
+    // UNKNOWN and must never render as defaults.
+    if (scenario.tracker === 'network') throw new TypeError('Failed to fetch');
+    if (scenario.tracker === 'server-error') return jsonRes({ error: 'INTERNAL' }, 500);
     return scenario.tracker ? jsonRes(scenario.tracker) : jsonRes({ error: 'NOT_FOUND' }, 404);
   }
   throw new Error('unrouted fetch: ' + method + ' ' + u);
@@ -217,20 +223,26 @@ function setST(isST) {
 
 const { renderFeedingTab } = await import('../../public/js/tabs/feeding-tab.js');
 const { default: suiteState } = await import('../../public/js/suite/data.js');
-const { trackerWriteField } = await import('../../public/js/game/tracker.js');
 
 /**
- * Put real tracker_state values behind `trackerRead()` - the one read the tab
- * uses for both figures. `trackerRead` resolves the character through
- * `suiteState.chars` and returns null for anything it cannot find, which is
- * exactly the "tracker unavailable" case the last describe block exercises by
- * simply not calling this.
+ * Put real values in the character's LIVE tracker_state document - the one the
+ * tab now reads for both figures.
+ *
+ * External review (12.3, High) moved this: the figures used to come from
+ * `trackerRead()`, tracker.js's in-memory cache, which SEEDS AND RETURNS
+ * DEFAULTS for any character nothing has loaded. `suiteState.chars` is still
+ * populated here deliberately - it is what makes that cache resolvable, and
+ * therefore what makes every assertion below discriminating: with the character
+ * present but its tracker never loaded, the cache answers "full", so any test
+ * expecting a non-full figure fails the moment the cache is read again.
  */
 function seedTracker(char, { willpower, inf }) {
   suiteState.chars = [char];
-  const id = String(char._id);
-  if (willpower != null) trackerWriteField(id, 'willpower', willpower);
-  if (inf != null) trackerWriteField(id, 'inf', inf);
+  scenario.tracker = {
+    character_id: String(char._id),
+    ...(willpower != null ? { willpower } : {}),
+    ...(inf != null ? { influence: inf } : {}),
+  };
 }
 
 async function renderTab(char) {
@@ -377,18 +389,130 @@ describe('AC 4: absence shows the current values alone', () => {
     expect(pane.querySelector('#feed-tally-declared').textContent).toBe('0');
   });
 
-  it('degrades to Unavailable, not a crash, when tracker_state cannot be read for the character', async () => {
+  it.each([
+    ['a 500 from the tracker route', 'server-error'],
+    ['a network failure', 'network'],
+  ])('degrades to Unavailable, not a crash and NOT defaults, on %s', async (_label, mode) => {
     const char = newChar();
-    // Deliberately NOT seeded: trackerRead resolves through suiteState.chars and
-    // returns null here, the same as a character the tracker never loaded.
+    suiteState.chars = [char];
+    scenario.tracker = mode;
     scenario.story = storyBody({ territoryInfluence: spends(2) });
 
     const html = await renderTab(char);
     expect(pane.querySelector('#feed-tally-wp').textContent).toBe('Unavailable');
     expect(pane.querySelector('#feed-tally-inf').textContent).toBe('Unavailable');
+    expect(html).toContain('could not be read');
     // The declared figure is independent of tracker_state and still shows.
     expect(pane.querySelector('#feed-tally-declared').textContent).toBe('2');
     expect(html).toContain('Rolled in your downtime form');
+  });
+
+  it('shows full values for a clean 404, where defaults ARE the true answer', async () => {
+    const char = newChar();
+    suiteState.chars = [char];
+    scenario.tracker = null;   // 404: no tracker document for this character yet
+    scenario.story = storyBody();
+
+    const html = await renderTab(char);
+    expect(pane.querySelector('#feed-tally-wp').textContent).toBe('5 / 5');
+    expect(pane.querySelector('#feed-tally-inf').textContent).toBe('5 / 5');
+    expect(html).not.toContain('could not be read');
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  External review (Codex, 2026-09-10) - 12.3 findings
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('review High: the figures are the live document, never a seeded default', () => {
+  it('shows real persisted values on a fresh session, where nothing has loaded the tracker', async () => {
+    const char = newChar();
+    // The reported case verbatim: the character really is on Willpower 1/5 and
+    // Influence 2/5, no tab has loaded their tracker, and tracker.js's cache
+    // would answer 5/5 and 5/5 for both.
+    suiteState.chars = [char];
+    scenario.tracker = { character_id: String(char._id), willpower: 1, influence: 2 };
+    scenario.story = storyBody();
+
+    await renderTab(char);
+    expect(pane.querySelector('#feed-tally-wp').textContent).toBe('1 / 5');
+    expect(pane.querySelector('#feed-tally-inf').textContent).toBe('2 / 5');
+  });
+
+  it('does not let a stale cache win over the live document', async () => {
+    const char = newChar();
+    suiteState.chars = [char];
+    // A first render seeds tracker.js's cache through the tab's own code path.
+    scenario.tracker = { character_id: String(char._id), willpower: 5, influence: 5 };
+    scenario.story = storyBody();
+    await renderTab(char);
+    expect(pane.querySelector('#feed-tally-wp').textContent).toBe('5 / 5');
+
+    // The server now says something different (a Tracker-tab spend elsewhere, a
+    // downtime-processing write). The live read wins.
+    scenario.tracker = { character_id: String(char._id), willpower: 2, influence: 1 };
+    await renderTab(char);
+    expect(pane.querySelector('#feed-tally-wp').textContent).toBe('2 / 5');
+    expect(pane.querySelector('#feed-tally-inf').textContent).toBe('1 / 5');
+  });
+
+  it('reads that document exactly once per render pass, shared with the ST panel', async () => {
+    setST(true);
+    const char = newChar();
+    seedTracker(char, { willpower: 3, inf: 3 });
+    scenario.story = storyBody({ territoryInfluence: spends(1) });
+
+    const html = await renderTab(char);
+    expect(scenario.calls.filter(c => c.startsWith('GET') && c.includes('/api/tracker_state/'))).toHaveLength(1);
+    expect(html).toContain('feed-st-confirm');
+  });
+
+  it('pre-fills the ST Influence stepper from the live figure, not the maximum', async () => {
+    setST(true);
+    const char = newChar();
+    seedTracker(char, { willpower: 3, inf: 2 });
+    scenario.story = storyBody();
+
+    await renderTab(char);
+    expect(pane.querySelector('#feed-inf-spent').textContent).toBe('2');
+  });
+});
+
+describe('review Low: a non-empty but unreadable spends array is not a zero', () => {
+  it('shows Unavailable, not 0, when no entry carries a readable amount', async () => {
+    const char = newChar();
+    seedTracker(char, { willpower: 5, inf: 5 });
+    scenario.story = storyBody({ territoryInfluence: { spends: [
+      { territory: { id: 't1', label: 'T' }, amount: 'lots' },
+      { territory: { id: 't2', label: 'U' }, amount: null },
+    ] } });
+
+    const html = await renderTab(char);
+    expect(html).toContain('Influence declared this cycle (not yet processed)');
+    expect(pane.querySelector('#feed-tally-declared').textContent).toBe('Unavailable');
+    expect(html).not.toContain('>0</span>');
+  });
+
+  it('still reports a genuine zero from an entry that really is 0', async () => {
+    const char = newChar();
+    seedTracker(char, { willpower: 5, inf: 5 });
+    scenario.story = storyBody({ territoryInfluence: spends(0) });
+
+    await renderTab(char);
+    expect(pane.querySelector('#feed-tally-declared').textContent).toBe('0');
+  });
+
+  it('does not render a hostile amount as markup', async () => {
+    const char = newChar();
+    seedTracker(char, { willpower: 5, inf: 5 });
+    scenario.story = storyBody({ territoryInfluence: { spends: [
+      { territory: { id: 't1', label: 'T' }, amount: '</span><img src=x onerror=alert(1)>' },
+    ] } });
+
+    const html = await renderTab(char);
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('onerror');
+    expect(pane.querySelector('#feed-tally-declared').textContent).toBe('Unavailable');
   });
 });
 

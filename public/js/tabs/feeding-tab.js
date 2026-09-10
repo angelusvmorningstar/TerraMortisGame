@@ -13,7 +13,7 @@
  * Willpower tally card, rendered in every state except loading.
  */
 
-import { apiGet, apiPut } from '../data/api.js';
+import { apiGet, apiPut, apiRaw } from '../data/api.js';
 import { fetchStoryFeeding } from '../data/story-feeding.js';
 import { getFeedingCycle } from '../downtime/db.js';
 import { esc, displayName, hasAoE } from '../data/helpers.js';
@@ -22,7 +22,15 @@ import { FEED_METHODS, TERRITORY_DATA } from './downtime-data.js';
 import { SKILLS_MENTAL } from '../data/constants.js';
 import { isSTRole } from '../auth/discord.js';
 import { domMeritContrib, effectiveInvictusStatus, calcTotalInfluence } from '../editor/domain.js';
-import { trackerAdj, trackerRead, trackerReadRaw } from '../game/tracker.js';
+// Review fix (Codex, external, 12.2 High + 12.3 High): `trackerRead()` is no
+// longer read for either the confirm panel or the tally card. It seeds and
+// returns DEFAULTS for any character nothing has loaded yet, which is
+// indistinguishable from real persisted state - it showed a character on
+// Willpower 1/5 as 5/5, and computed an aggravated write from `aggravated: 0`
+// when the character really carried 3 boxes. Both now read the live document
+// (`readTrackerState` below). `trackerReadRaw` stays, but only to keep the
+// tracker card's in-memory cache in step AFTER a successful write.
+import { trackerReadRaw } from '../game/tracker.js';
 // dtlt.1: bonus successes (Stronger Than You). The local dice helpers below
 // stay — they carry this tab's configurable again-threshold, which the shared
 // engine reads from global roll state instead. Only the success RESOLUTION is
@@ -83,16 +91,33 @@ let storyTerritoryInfluence = null;
 // The active cycle's _id as a string. Also the value of the tracker_state
 // idempotency marker written when a form-sourced roll's aggHealed is applied.
 let activeCycleId = null;
-// The raw tracker_state document, read once per render pass (ST only). Carries
-// fields tracker.js's own in-memory cache does not map, notably the
-// feeding_agg_healed_cycle_id marker.
+// The raw tracker_state document, read live once per render pass, for both
+// roles. Carries fields tracker.js's own in-memory cache does not map, notably
+// the feeding_agg_healed_cycle_id marker.
 let trackerDoc = null;
+// How that read went: 'ok' (a real document), 'absent' (404 - this character
+// genuinely has no tracker document yet, so defaults ARE the true answer), or
+// 'error' (the read itself failed - the real state is UNKNOWN). null before the
+// first read of a render pass. Nothing may compute a write from 'error'.
+let trackerLoad = null;
+// Set for the duration of a confirm write, so a second click (or a second
+// handler invocation) cannot start a duplicate one.
+let _confirmInFlight = false;
 // The tracker_state field the aggHealed idempotency marker lives in. TM Game
 // has no write path to tm_story (Story 12.2 grounding), so an "already applied"
 // flag cannot be written back onto TM Story's submission — it lives here, in
 // the one collection this tab already writes to.
 export const AGG_HEALED_MARKER = 'feeding_agg_healed_cycle_id';
-const _stConfirmed = {}; // charId → {vitae, infSpent} — persists within session
+// `charId|cycleId` → {vitae, infSpent, ...} — persists within the session.
+// Review fix (Codex, external, 12.2 Low): keyed by character AND cycle. Keyed by
+// character alone, a confirmation recorded against the PREVIOUS cycle went on
+// hiding the confirm controls after the active cycle changed without a page
+// reload, silently skipping the new cycle's own aggHealed.
+const _stConfirmed = {};
+
+function stConfirmKey(charId) {
+  return String(charId) + '|' + (activeCycleId || '');
+}
 
 // Resolve a feeding_territories grid key (slug OR ObjectId hex string) to a
 // TERRITORY_DATA entry. After the territory-FK migration the grid keys are
@@ -139,6 +164,7 @@ export async function renderFeedingTab(el, char) {
   storyTerritoryInfluence = null;
   activeCycleId = null;
   trackerDoc = null;
+  trackerLoad = null;
 
   // Fetch live territory ambience from DB (used by computeVitateTally)
   let liveTerrDocs = [];
@@ -219,8 +245,19 @@ export async function renderFeedingTab(el, char) {
   // other outcome (fetch failed, no submission, historical document with no
   // rollResult) falls through to the existing state machine unchanged, which
   // still serves residual old-format data correctly.
-  const storyRes = await fetchStoryFeeding(String(char._id), activeCycleId);
+  // Review fix (Codex, external, 12.2 High + 12.3 High): the character's LIVE
+  // tracker_state, read once per render pass, for both roles, before anything
+  // renders a tracker figure or computes a write from one. It used to be read
+  // only inside the form-sourced branch and only for an ST, which left the
+  // Story 12.3 tally card - rendered in every state, for everyone - on
+  // `trackerRead()`'s seeded defaults. Both reads now share this one request.
+  const [storyRes, trackerRes] = await Promise.all([
+    fetchStoryFeeding(String(char._id), activeCycleId),
+    readTrackerState(String(char._id)),
+  ]);
   if (currentChar !== charSnapshot) return;
+  trackerLoad = trackerRes.status;
+  trackerDoc = trackerRes.doc;
 
   // Story 12.3: the tally card's declared-spend figure comes off THIS response,
   // not a second request. `fetchStoryFeeding` returns TM Story's whole body
@@ -229,16 +266,15 @@ export async function renderFeedingTab(el, char) {
   // current values alone.
   storyTerritoryInfluence = storyRes?.ok ? (storyRes.data?.territory_influence ?? null) : null;
 
-  if (storyRes?.ok && storyRes.data?.feeding?.rollResult) {
-    storyFeeding = storyRes.data.feeding;
+  // Review fix (Codex, external, 12.2 Medium): ANY truthy `rollResult` used to
+  // win here, so `{}`, `[]`, a bare string or a historical partial object
+  // activated the read-only state and rendered a fabricated "locked" result of
+  // zero successes and no dice, instead of falling through to the old state
+  // machine. Only a genuinely usable shape activates it now, and what it
+  // activates on is the NORMALISED copy - see normaliseStoryFeeding.
+  if (storyRes?.ok && isUsableStoryRoll(storyRes.data?.feeding)) {
+    storyFeeding = normaliseStoryFeeding(storyRes.data.feeding);
     feedingState = 'rolled-from-form';
-    // Only the ST confirm panel consumes the tracker document (current
-    // Aggravated count + the aggHealed idempotency marker), so only an ST pays
-    // for the request.
-    if (isSTRole()) {
-      trackerDoc = await readTrackerDoc(String(char._id));
-      if (currentChar !== charSnapshot) return;
-    }
     mountFeedingPanes(el, char);
     render();
     return;
@@ -390,19 +426,137 @@ function mountFeedingPanes(el, char) {
 }
 
 /**
- * The raw tracker_state document for a character.
+ * The character's live tracker_state document, as a tri-state result.
  *
- * tracker.js's in-memory cache maps a fixed field list (see its `ensureLoaded`)
- * and drops anything else, so the aggHealed idempotency marker cannot be read
- * back through it. A 404 simply means this character has no tracker document
- * yet: no marker, no damage, nothing to fail over.
+ * tracker.js's in-memory cache is deliberately NOT consulted: it maps a fixed
+ * field list (see its `ensureLoaded`) and drops anything else, so the aggHealed
+ * idempotency marker cannot be read back through it at all, and - the reason
+ * this function exists at all - `trackerRead()` SEEDS AND RETURNS DEFAULTS for
+ * a character nothing has loaded yet. This tab never calls `ensureLoaded`, so
+ * on a fresh session those defaults were the only thing it ever saw.
+ *
+ * Uses `apiRaw` rather than `apiGet` because the status code is the whole
+ * point: `apiGet` throws identically on a 404 and on a 500 or a dropped
+ * connection, and those two mean opposite things here.
+ *
+ *   'ok'      a real document came back; `doc` is it.
+ *   'absent'  404 - this character genuinely has no tracker document yet, so
+ *             defaults (full Willpower/Influence, no damage, no marker) are the
+ *             true answer, not a guess.
+ *   'error'   the read failed. The real state is UNKNOWN. Callers must render
+ *             "Unavailable" and must not compute any write from it.
  */
-async function readTrackerDoc(charId) {
+async function readTrackerState(charId) {
+  let res;
   try {
-    return await apiGet('/api/tracker_state/' + charId);
+    res = await apiRaw('GET', '/api/tracker_state/' + charId);
   } catch {
-    return null;
+    return { status: 'error', doc: null };
   }
+  if (res.ok && res.body && typeof res.body === 'object') return { status: 'ok', doc: res.body };
+  if (res.status === 404) return { status: 'absent', doc: null };
+  return { status: 'error', doc: null };
+}
+
+/**
+ * The three tracker figures this tab uses, or null when the read failed.
+ *
+ * Returns plain numbers only. `null` means "unknown", and is never silently
+ * substituted with a default: that substitution is exactly the bug this
+ * replaces.
+ */
+function trackerFigures() {
+  if (!currentChar) return null;
+  if (trackerLoad === 'absent') {
+    // No document: the server has never been told otherwise, so the character
+    // is at full Willpower and Influence with no damage and no marker.
+    return {
+      willpower: calcWillpowerMax(currentChar),
+      inf: calcTotalInfluence(currentChar),
+      aggravated: 0,
+      marker: '',
+    };
+  }
+  if (trackerLoad !== 'ok' || !trackerDoc) return null;
+  const num = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  return {
+    willpower: num(trackerDoc.willpower, calcWillpowerMax(currentChar)),
+    inf: num(trackerDoc.influence, calcTotalInfluence(currentChar)),
+    aggravated: Math.max(0, Math.trunc(num(trackerDoc.aggravated, 0))),
+    marker: String(trackerDoc[AGG_HEALED_MARKER] || ''),
+  };
+}
+
+// ── TM Story payload validation + normalisation ───────────────────────────────
+// Review fix (Codex, external, 12.2 High/Medium). TM Story is a genuinely
+// EXTERNAL app: its response is not this app's own trusted database, and its
+// values were being interpolated into innerHTML raw. A single corrupted or
+// hostile `dice` entry such as `</span><img src=x onerror=...>` executed in TM
+// Game's own origin, where the Discord bearer token lives in localStorage.
+// Nothing from that payload now reaches the DOM except numbers this file
+// produced itself, and the two strings it keeps go through `esc()` as before.
+
+/** A die: an integer 1-10. Anything else is not a die. */
+function _die(v) {
+  const n = Number(v);
+  return (Number.isInteger(n) && n >= 1 && n <= 10) ? n : null;
+}
+
+/** A vessel's vitae: a finite integer, floored at 0 and bounded well above any
+ *  real value (a Human vessel tops out at 7; an Animal feed records one pooled
+ *  total, which is larger but still small). */
+function _vesselVitae(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n)) return null;
+  const i = Math.trunc(n);
+  return (i >= 0 && i <= 99) ? i : null;
+}
+
+/**
+ * Is this a feeding sub-document carrying a roll we can actually display?
+ *
+ * Requires a plain object with a plain-object `rollResult`, a real `dice`
+ * array, and a non-negative integer `successes`. `{}`, `[]`, a bare string and
+ * a historical partial block all fail, and fall through to the old TM
+ * Game-sourced state machine exactly as "no usable roll" already did.
+ */
+export function isUsableStoryRoll(f) {
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return false;
+  const rr = f.rollResult;
+  if (!rr || typeof rr !== 'object' || Array.isArray(rr)) return false;
+  if (!Array.isArray(rr.dice)) return false;
+  if (!Number.isInteger(rr.successes) || rr.successes < 0) return false;
+  return true;
+}
+
+/**
+ * A sanitised copy carrying ONLY the fields the read-only view renders, each
+ * coerced to a type that view can safely produce markup from. Dice and vessel
+ * values that are not real numbers are dropped rather than rendered; the two
+ * remaining strings (`method`, `bloodType`) are kept as strings and stay
+ * `esc()`-ed at the point of use.
+ */
+export function normaliseStoryFeeding(f) {
+  const rr = f.rollResult;
+  const again = Number(rr.again);
+  const pool = Number(rr.pool);
+  return {
+    method: typeof f.method === 'string' ? f.method : '',
+    bloodType: typeof f.bloodType === 'string' ? f.bloodType : '',
+    aggHealed: (Number.isInteger(f.aggHealed) && f.aggHealed > 0) ? f.aggHealed : 0,
+    vesselVitae: (Array.isArray(f.vesselVitae) ? f.vesselVitae : [])
+      .map(_vesselVitae).filter(v => v !== null),
+    rollResult: {
+      pool: Number.isInteger(pool) && pool >= 0 ? pool : null,
+      dice: rr.dice.map(_die).filter(d => d !== null),
+      successes: rr.successes,
+      exceptional: rr.exceptional === true,
+      dramatic_failure: rr.dramatic_failure === true,
+      rote: rr.rote === true,
+      chance: rr.chance === true,
+      again: (again === 8 || again === 9) ? again : 10,
+    },
+  };
 }
 
 async function renderFeedingHistoryPane(el, char) {
@@ -721,14 +875,41 @@ function renderVitaeTallyCard(tally, vessels = null) {
  * Story's own budget maths (`public/js/downtime-form/influence-budget.js`,
  * `totalSpent`) charges 1 Influence per point EITHER WAY, so a signed sum would
  * under-report, and a mix of +2 and -2 would report a spend of nothing at all.
+ *
+ * Review fix (Codex, external, 12.3 Low): returns the string 'unavailable' -
+ * not 0 - for a NON-EMPTY spends array in which no entry carries a readable
+ * amount. `{ spends: [{ amount: 'lots' }] }` used to reduce to 0 and print
+ * "0 declared" as though that were the player's real declaration. A mix is
+ * still summed from the readable entries, which is the closest true figure
+ * available.
  */
-function declaredInfluenceSpend(ti) {
+export function declaredInfluenceSpend(ti) {
   const spends = ti && Array.isArray(ti.spends) ? ti.spends : null;
   if (!spends) return null;
-  return spends.reduce((sum, s) => {
-    const n = Number(s?.amount);
-    return sum + (Number.isFinite(n) ? Math.abs(Math.trunc(n)) : 0);
-  }, 0);
+  if (!spends.length) return 0;        // genuinely zero: the section exists and records no spend
+  let total = 0, readable = 0;
+  for (const s of spends) {
+    const n = _spendAmount(s?.amount);
+    if (n === null) continue;
+    readable += 1;
+    total += Math.abs(n);
+  }
+  return readable ? total : 'unavailable';
+}
+
+/**
+ * One `spends[].amount`, as a signed integer, or null when it is not a readable
+ * amount at all. `null`, `undefined`, `''`, `true` and objects all coerce to a
+ * NUMBER through `Number()` (0, 0, 0, 1, NaN) - which is how a malformed entry
+ * used to pass for a real declaration of zero.
+ */
+function _spendAmount(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? Math.trunc(n) : null;
+  }
+  return null;
 }
 
 /**
@@ -737,10 +918,18 @@ function declaredInfluenceSpend(ti) {
  * Rendered in every state, alongside whatever the tab is otherwise showing:
  * it is information about the character, not a step in the feeding flow.
  *
- * Both current figures come from the SAME `trackerRead()` the ST confirm panel
- * already reads Influence from - one live tracker_state source, no second one
- * invented here. Willpower is read and shown plainly: no spend itemisation for
- * it exists anywhere in either app, so there is nothing to net it against.
+ * Both current figures come from the SAME live tracker_state read the ST
+ * confirm panel uses (`readTrackerState`, once per render pass) - one source,
+ * no second one invented here. Willpower is read and shown plainly: no spend
+ * itemisation for it exists anywhere in either app, so there is nothing to net
+ * it against.
+ *
+ * Review fix (Codex, external, 12.3 High): this used to read `trackerRead()`,
+ * whose cache SEEDS DEFAULTS for any character nothing has loaded yet - so on a
+ * fresh session a character really on Willpower 1/5 and Influence 2/5 rendered
+ * as 5/5 and 5/5, with no way to tell that from real data. "The read failed"
+ * (Unavailable) and "there is no document yet, so full is the true answer" are
+ * now two different things, decided by the HTTP status.
  *
  * Influence is deliberately two separate, separately-labelled rows. The
  * declared figure has NOT been taken off the current total: TM Story's own
@@ -750,23 +939,23 @@ function declaredInfluenceSpend(ti) {
  */
 function renderInfluenceWillpowerTally() {
   if (!currentChar) return '';
-  const ts = trackerRead(String(currentChar._id));
+  const ts = trackerFigures();
   const declared = declaredInfluenceSpend(storyTerritoryInfluence);
 
-  const wp = (ts && ts.willpower != null)
-    ? `${ts.willpower} / ${calcWillpowerMax(currentChar)}`
-    : 'Unavailable';
-  const inf = (ts && ts.inf != null)
-    ? `${ts.inf} / ${calcTotalInfluence(currentChar)}`
-    : 'Unavailable';
+  const wp  = ts ? `${ts.willpower} / ${calcWillpowerMax(currentChar)}` : 'Unavailable';
+  const inf = ts ? `${ts.inf} / ${calcTotalInfluence(currentChar)}` : 'Unavailable';
 
   let h = '<div class="fvt-card feed-tally" id="feed-tally">';
   h += '<div class="fvt-title">Influence and Willpower</div>';
   h += `<div class="fvt-row"><span class="fvt-label">Willpower</span><span class="fvt-val" id="feed-tally-wp">${esc(wp)}</span></div>`;
   h += `<div class="fvt-row"><span class="fvt-label">Influence (current)</span><span class="fvt-val" id="feed-tally-inf">${esc(inf)}</span></div>`;
+  if (!ts) {
+    h += '<p class="feeding-state-detail">Your tracker could not be read just now, so these figures are not shown rather than guessed at. Reload to try again.</p>';
+  }
   if (declared !== null) {
+    const shown = declared === 'unavailable' ? 'Unavailable' : String(declared);
     h += '<div class="fvt-row"><span class="fvt-label">Influence declared this cycle (not yet processed)</span>';
-    h += `<span class="fvt-val" id="feed-tally-declared" data-declared="${declared}">${declared}</span></div>`;
+    h += `<span class="fvt-val" id="feed-tally-declared" data-declared="${esc(shown)}">${esc(shown)}</span></div>`;
     h += '<p class="feeding-state-detail">Declared spending is not taken off the current total until your Storyteller processes the downtime.</p>';
   }
   h += '</div>';
@@ -799,15 +988,30 @@ function fvcConseqClass(v) {
  * `aggHealed`   Aggravated boxes the downtime form recorded this feed as
  *               healing. Always 0 on the existing TM-Game-sourced path, which
  *               therefore renders exactly as it did before this story.
- * `aggApplied`  the tracker_state marker already names this cycle, so the
- *               healing has been applied once and must not be offered again.
  * `formSourced` this is a TM Story roll, so no vitae tally was computed for it.
+ *
+ * Review fix (Codex, external, 12.2 High + 12.2 Medium/idempotency): the panel
+ * FAILS CLOSED. Every figure it offers to write is now read from the live
+ * tracker document; if that read failed, the character's real Influence and
+ * Aggravated counts are unknown, and the panel renders a notice with NO confirm
+ * control at all rather than a stepper pre-filled with a default that would
+ * overwrite real state. In particular "the read failed" is no longer
+ * indistinguishable from "no marker, healing not yet applied", which was one of
+ * the two real double-application routes.
  */
-function renderStConfirmPanel({ stDefault, aggHealed = 0, aggApplied = false, formSourced = false }) {
+function renderStConfirmPanel({ stDefault, aggHealed = 0, formSourced = false }) {
   const charId = String(currentChar._id);
-  const confirmed = _stConfirmed[charId];
+  const confirmed = _stConfirmed[stConfirmKey(charId)];
   const vitaeMax = calcVitaeMax(currentChar);
   const infMax   = calcTotalInfluence(currentChar);
+  const ts = trackerFigures();
+  if (!ts && !confirmed) {
+    return '<div class="feed-st-confirm"><p class="feeding-state-detail">'
+      + 'The tracker state for this character could not be read, so confirming the feed is unavailable: '
+      + 'writing Vitae, Influence or Aggravated now could overwrite real values with defaults. Reload to try again.'
+      + '</p></div>';
+  }
+  const aggApplied = !!activeCycleId && !!ts && ts.marker === activeCycleId;
   let h = `<div class="feed-st-confirm">`;
   if (confirmed) {
     const vitaeStr = confirmed.vitaeMax != null
@@ -837,7 +1041,7 @@ function renderStConfirmPanel({ stDefault, aggHealed = 0, aggApplied = false, fo
     h += `<div class="feed-st-row-lbl">Influence Remaining</div>`;
     h += `<div class="feed-st-row-ctrl">`;
     h += `<button class="feed-adj" id="feed-inf-adj-down">\u2212</button>`;
-    const _curInf = trackerRead(String(currentChar._id))?.inf ?? infMax;
+    const _curInf = Math.max(0, Math.min(infMax, ts.inf));
     h += `<span class="feed-inf-val" id="feed-inf-spent" data-inf-max="${infMax}">${_curInf}</span>`;
     h += `<button class="feed-adj" id="feed-inf-adj-up">+</button>`;
     h += `</div>`;
@@ -886,12 +1090,15 @@ function renderStConfirmPanel({ stDefault, aggHealed = 0, aggApplied = false, fo
  * restyles the whole tab, so nothing new is invented here).
  */
 function renderFormSourcedRoll(isST) {
+  // `storyFeeding` is the NORMALISED copy (normaliseStoryFeeding): dice and
+  // vessel values are already integers this file produced, and the two strings
+  // still go through esc() below. Nothing raw from TM Story reaches innerHTML.
   const f = storyFeeding;
-  const rr = f.rollResult || {};
-  const dice = Array.isArray(rr.dice) ? rr.dice : [];
-  const successes = Number.isInteger(rr.successes) ? rr.successes : 0;
-  const vessels = Array.isArray(f.vesselVitae) ? f.vesselVitae : [];
-  const vesselTotal = vessels.reduce((a, b) => a + (Number(b) || 0), 0);
+  const rr = f.rollResult;
+  const dice = rr.dice;
+  const successes = rr.successes;
+  const vessels = f.vesselVitae;
+  const vesselTotal = vessels.reduce((a, b) => a + b, 0);
 
   let h = '<div class="feeding-result">';
   h += '<p class="feeding-state-detail">Rolled in your downtime form. This result is final.</p>';
@@ -904,7 +1111,7 @@ function renderFormSourcedRoll(isST) {
     if (rr.chance)    h += ' <span class="feeding-again-badge">Chance die</span>';
     h += '</p>';
   }
-  if (Number.isInteger(rr.pool)) {
+  if (rr.pool !== null) {
     h += '<div class="feeding-pool-display">';
     h += `<span class="feeding-pool-total">${rr.pool} dice</span>`;
     h += '</div>';
@@ -958,13 +1165,9 @@ function renderFormSourcedRoll(isST) {
   h += '</div>';
 
   if (isST) {
-    const aggHealed = Number.isInteger(f.aggHealed) && f.aggHealed > 0 ? f.aggHealed : 0;
-    const aggApplied = !!activeCycleId
-      && String(trackerDoc?.[AGG_HEALED_MARKER] || '') === activeCycleId;
     h += renderStConfirmPanel({
       stDefault: vesselTotal,
-      aggHealed,
-      aggApplied,
+      aggHealed: f.aggHealed,
       formSourced: true,
     });
   }
@@ -1307,6 +1510,17 @@ function wireEvents() {
   });
   container.querySelector('#feed-confirm-btn')?.addEventListener('click', async () => {
     if (!currentChar) return;
+    // Review fix (Codex, external, 12.2 Medium/idempotency): the DOM `disabled`
+    // flag alone does not stop a second handler invocation racing the first
+    // past the check-then-set below, so the guard is module state, set before
+    // anything is read and cleared only when the write has settled.
+    if (_confirmInFlight) return;
+    // And fail closed: if the live tracker read failed, the real Influence and
+    // Aggravated counts are unknown. The panel does not render a confirm
+    // control in that case; this is the second lock on the same door.
+    const ts = trackerFigures();
+    if (!ts) return;
+    _confirmInFlight = true;
     const charId = String(currentChar._id);
     const n = parseInt(container.querySelector('#feed-confirm-n')?.textContent) || 0;
 
@@ -1330,16 +1544,14 @@ function wireEvents() {
     const aggHealed = aggEl ? Math.max(0, parseInt(aggEl.dataset.aggHealed, 10) || 0) : 0;
     const body = { vitae: n, influence: infAfter };
     let newAgg = null;
-    if (aggHealed > 0 && activeCycleId) {
-      // Cache first, matching the influence row's own precedence just above:
-      // tracker.js's cache tracks manual Tracker-tab adjustments and WS frames
-      // made since this tab last read the server, and falls back to the raw
-      // document this render pass fetched.
-      const cached = trackerReadRaw(charId);
-      const curAgg = (cached && cached.aggravated != null)
-        ? cached.aggravated
-        : (trackerDoc && trackerDoc.aggravated != null ? trackerDoc.aggravated : 0);
-      newAgg = Math.max(0, curAgg - aggHealed);
+    if (aggHealed > 0 && activeCycleId && ts.marker !== activeCycleId) {
+      // Review fix (Codex, external, 12.2 High): the LIVE tracker document,
+      // never tracker.js's cache. That cache seeds `aggravated: 0` for any
+      // character nothing has loaded, and this tab has never loaded one - so a
+      // character carrying 3 Aggravated with `aggHealed: 2` computed and wrote
+      // `aggravated: 0`, healing all three. `trackerFigures()` returns a figure
+      // only when the live read genuinely succeeded or genuinely 404'd.
+      newAgg = Math.max(0, ts.aggravated - aggHealed);
       body.aggravated = newAgg;
       body[AGG_HEALED_MARKER] = activeCycleId;
     }
@@ -1347,14 +1559,17 @@ function wireEvents() {
     // Write vitae and influence to API — single source of truth for tracker state
     try {
       await apiPut('/api/tracker_state/' + charId, body);
+      // Bring this tab's own live copy up to what was just written - including
+      // the marker, so the re-render below shows "already applied" rather than
+      // re-offering the healing, and including the promotion from 'absent' to
+      // 'ok' (a character with no tracker document now has one).
+      trackerDoc = { ...(trackerDoc || {}), ...body };
+      trackerLoad = 'ok';
       // Keep tracker.js in-memory cache in sync so the tracker card re-renders correctly
       const _raw = trackerReadRaw(charId);
-      if (_raw) _raw.inf = infAfter;
-      if (newAgg != null) {
-        if (_raw) _raw.aggravated = newAgg;
-        // Same for this tab's own copy, so the re-render below sees the marker
-        // and shows "already applied" rather than re-offering the healing.
-        trackerDoc = { ...(trackerDoc || {}), aggravated: newAgg, [AGG_HEALED_MARKER]: activeCycleId };
+      if (_raw) {
+        _raw.inf = infAfter;
+        if (newAgg != null) _raw.aggravated = newAgg;
       }
       // vitae_confirmed used by trackerAdj to clear confirmed marker on manual ST override
       try {
@@ -1365,7 +1580,7 @@ function wireEvents() {
       } catch { /* ignore */ }
       const record = { vitae: n, vitaeMax, infSpent, infAfter, infMax };
       if (aggHealed > 0) record.aggHealed = aggHealed;
-      _stConfirmed[charId] = record;
+      _stConfirmed[stConfirmKey(charId)] = record;
       render();
     } catch (err) {
       console.error('Tracker feed confirm failed:', err);
@@ -1374,12 +1589,14 @@ function wireEvents() {
         btn.classList.add('is-error');
         btn.disabled = false;
       }
+    } finally {
+      _confirmInFlight = false;
     }
   });
 
   container.querySelector('#feed-reconfirm-btn')?.addEventListener('click', () => {
     if (!currentChar) return;
-    delete _stConfirmed[String(currentChar._id)];
+    delete _stConfirmed[stConfirmKey(String(currentChar._id))];
     render();
   });
 

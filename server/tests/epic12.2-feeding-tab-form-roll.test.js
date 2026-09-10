@@ -118,6 +118,10 @@ globalThis.document = {
 
 const CYCLE_ID = '6a8bef9a149e7b83a489adba';   // Jack Fallow's real Game 8 cycle (Story 12.1 grounding)
 const CYCLE = { _id: CYCLE_ID, label: 'Downtime 8', game_number: 8, phase: 'game' };
+// A LATER cycle, used to prove a confirmation recorded against CYCLE does not
+// suppress this one's own confirm controls (external review, 12.2 Low).
+const CYCLE2_ID = '6b9cef9a149e7b83a489adbb';
+const CYCLE2 = { _id: CYCLE2_ID, label: 'Downtime 9', game_number: 9, phase: 'game' };
 
 // A real current-format sub-document shape (TM Story content-shape.js).
 function storyFeedingBody({ aggHealed = 0, vesselVitae = [2, 1], bloodType = 'Human', extra = {} } = {}) {
@@ -176,13 +180,19 @@ globalThis.fetch = async (url, opts = {}) => {
     return jsonRes(scenario.story);
   }
   if (u.includes('/api/territories')) return jsonRes([]);
-  if (u.includes('/api/chapters')) return jsonRes([CYCLE]);
+  if (u.includes('/api/chapters')) return jsonRes([scenario.cycle]);
   if (u.includes('/api/downtime_submissions')) return jsonRes(scenario.subs);
   if (u.includes('/api/tracker_state/')) {
     if (method === 'PUT') {
       scenario.puts.push(JSON.parse(opts.body));
       return jsonRes({ ok: true });
     }
+    // `scenario.tracker`: a document (200), null (404 - no tracker document
+    // for this character yet), 'server-error' (500) or 'network' (the fetch
+    // itself fails). The last two are the cases the tab must NOT read as
+    // "defaults are fine" (external review, 12.2 High / 12.3 High).
+    if (scenario.tracker === 'network') throw new TypeError('Failed to fetch');
+    if (scenario.tracker === 'server-error') return jsonRes({ error: 'INTERNAL' }, 500);
     return scenario.tracker ? jsonRes(scenario.tracker) : jsonRes({ error: 'NOT_FOUND' }, 404);
   }
   throw new Error('unrouted fetch: ' + method + ' ' + u);
@@ -209,6 +219,23 @@ function setST(isST) {
 }
 
 const { renderFeedingTab, AGG_HEALED_MARKER } = await import('../../public/js/tabs/feeding-tab.js');
+// Only ever used to reproduce the seeded-default cache the confirm panel used
+// to prefer. Nothing in the tab may read a figure out of that cache any more.
+const { default: suiteState } = await import('../../public/js/suite/data.js');
+const { trackerWriteField } = await import('../../public/js/game/tracker.js');
+
+/**
+ * Put the character in exactly the state the reported bug needed: resolvable
+ * through `suiteState.chars`, with tracker.js's in-memory cache already SEEDED
+ * WITH DEFAULTS (`aggravated: 0`) and never loaded from the server. Any render
+ * of the Tracker tab, or of Story 12.3's tally card as first written, does this
+ * on its own - `trackerWriteField` is just the shortest way to trigger the same
+ * `fromCache()` seeding here.
+ */
+function seedDefaultCache(char) {
+  suiteState.chars = [char];
+  trackerWriteField(String(char._id), 'conditions', []);
+}
 
 async function renderTab(char) {
   leftPane = makePane();
@@ -228,7 +255,11 @@ beforeEach(() => {
   store.clear();
   store.set('tm_auth_token', 'discord-token-abc');
   setST(false);
-  scenario = { story: storyFeedingBody(), subs: [], tracker: null, puts: [], calls: [], storyCalls: [] };
+  suiteState.chars = [];
+  scenario = {
+    story: storyFeedingBody(), subs: [], tracker: null, cycle: CYCLE,
+    puts: [], calls: [], storyCalls: [],
+  };
 });
 
 afterAll(() => {
@@ -514,10 +545,15 @@ describe('AC 3/4: aggHealed rides the existing ST confirm write', () => {
     expect(scenario.puts[1]).not.toHaveProperty(AGG_HEALED_MARKER);
   });
 
-  it('reads the tracker document only for an ST', async () => {
+  // Was 'reads the tracker document only for an ST'. External review (12.3,
+  // High) killed that behaviour deliberately: Story 12.3's tally card renders
+  // for EVERY role in every state and shows real tracker figures, so a player
+  // needs the same live read. Exactly one GET per render pass, shared by the
+  // card and the confirm panel, is the replacement guarantee.
+  it('reads the live tracker document exactly once per render, for both roles', async () => {
     const char = newChar();
     await renderTab(char);
-    expect(scenario.calls.filter(c => c.includes('/api/tracker_state/'))).toHaveLength(0);
+    expect(scenario.calls.filter(c => c.startsWith('GET') && c.includes('/api/tracker_state/'))).toHaveLength(1);
 
     setST(true);
     scenario.calls = [];
@@ -543,6 +579,216 @@ describe('AC 3/4: aggHealed rides the existing ST confirm write', () => {
 // ═════════════════════════════════════════════════════════════════════════════
 //  Regression - the existing TM-Game-sourced confirm is untouched
 // ═════════════════════════════════════════════════════════════════════════════
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  External review (Codex, 2026-09-10) - findings against 12.2 and 12.3
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('review High: the aggravated write is computed from the LIVE tracker document', () => {
+  it('uses the live figure, not tracker.js\'s seeded-default cache', async () => {
+    setST(true);
+    const char = newChar();
+    // The real interlock between the two reviews: tracker.js SEEDS
+    // `aggravated: 0` for any character nothing has loaded (its own
+    // `fromCache`), and 12.3's tally card as first written triggered exactly
+    // that on every render. That seeded 0 was then what the confirm panel
+    // preferred over the real document.
+    seedDefaultCache(char);
+    scenario.story = storyFeedingBody({ aggHealed: 2 });
+    scenario.tracker = { character_id: char._id, aggravated: 3, influence: 0 };
+
+    await renderTab(char);
+    await pane.click('#feed-confirm-btn');
+
+    // 3 on record minus 2 healed. The cache-first version wrote 0 here, healing
+    // all three boxes.
+    expect(scenario.puts[0].aggravated).toBe(1);
+  });
+
+  it.each([
+    ['a 500 from the tracker route', 'server-error'],
+    ['a network failure', 'network'],
+  ])('fails closed on %s: no confirm control, no write path at all', async (_label, mode) => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 2 });
+    scenario.tracker = mode;
+
+    const html = await renderTab(char);
+
+    expect(html).toContain('could not be read');
+    expect(html).not.toContain('feed-confirm-btn');
+    expect(html).not.toContain('data-agg-healed');
+    expect(html).not.toContain('feed-inf-spent');
+    expect(pane.querySelector('#feed-confirm-btn')).toBeNull();
+    await expect(pane.click('#feed-confirm-btn')).rejects.toThrow(/no click handler/);
+    expect(scenario.puts).toHaveLength(0);
+    // The roll itself still renders: a failed tracker read is not a failed tab.
+    expect(html).toContain('Rolled in your downtime form');
+  });
+
+  it('still offers the healing when the read is a clean 404 (no document yet)', async () => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 2 });
+    scenario.tracker = null;   // 404
+
+    const html = await renderTab(char);
+    expect(html).toContain('data-agg-healed="2"');
+    expect(html).not.toContain('could not be read');
+  });
+});
+
+describe('review High: TM Story\'s payload is normalised at the boundary', () => {
+  const XSS = '</span><img src=x onerror=alert(document.cookie)>';
+
+  it('renders only normalised dice, never raw external markup', async () => {
+    scenario.story = storyFeedingBody();
+    scenario.story.feeding.rollResult.dice = [8, XSS, 3, { toString: () => XSS }, null];
+    const html = await renderTab(newChar());
+
+    expect(html).toContain('Rolled in your downtime form');
+    expect(html).toContain('<span class="feed-die fd-s">8</span>');
+    expect(html).toContain('<span class="feed-die">3</span>');
+    // Nothing of the payload survived, escaped or otherwise.
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('onerror');
+    expect(html).not.toContain('document.cookie');
+  });
+
+  it('renders only normalised vessel values, never raw external markup', async () => {
+    scenario.story = storyFeedingBody({ vesselVitae: [2, XSS, 4] });
+    const html = await renderTab(newChar());
+
+    expect(html).toContain('<span class="fvc-val">2 vitae</span>');
+    expect(html).toContain('<span class="fvc-val">4 vitae</span>');
+    expect(html).toContain('Total Vitae: <strong>6</strong>');
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('onerror');
+  });
+
+  it('escapes, rather than executes, a hostile method or blood type', async () => {
+    scenario.story = storyFeedingBody({ bloodType: XSS });
+    scenario.story.feeding.method = XSS;
+    const html = await renderTab(newChar());
+
+    // `method` is the one string still interpolated, and esc() neutralises it:
+    // it appears as inert text, never as a tag the browser would parse.
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('</span><img');
+    expect(html).toContain('&lt;/span&gt;&lt;img src=x onerror=alert(document.cookie)&gt;');
+  });
+
+  it('never lets a hostile aggHealed reach the ST panel as markup or as a write', async () => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: XSS });
+    scenario.tracker = { character_id: char._id, aggravated: 3 };
+
+    const html = await renderTab(char);
+    expect(html).not.toContain('<img');
+    expect(html).not.toContain('Aggravated Healed');
+
+    await pane.click('#feed-confirm-btn');
+    expect(scenario.puts[0]).not.toHaveProperty('aggravated');
+  });
+});
+
+describe('review Medium: only a genuinely usable rollResult activates the new state', () => {
+  it.each([
+    ['an empty object', {}],
+    ['an array', []],
+    ['a bare string', 'rolled'],
+    ['a number', 7],
+    ['a rollResult that is an empty object', { rollResult: {} }],
+    ['a rollResult that is an array', { rollResult: [] }],
+    ['a rollResult with no dice array', { rollResult: { successes: 3 } }],
+    ['a rollResult whose dice is a string', { rollResult: { dice: '8,3', successes: 3 } }],
+    ['a rollResult with a non-integer successes', { rollResult: { dice: [8], successes: '3' } }],
+    ['a rollResult with a negative successes', { rollResult: { dice: [8], successes: -1 } }],
+    ['a rollResult with no successes at all', { rollResult: { dice: [8, 3] } }],
+  ])('falls through to the old state machine on %s', async (_label, feeding) => {
+    const char = newChar();
+    scenario.story = { feeding, lifecycle_state: 'final', status: 'final' };
+    scenario.subs = [gameSubmission(char._id)];
+
+    const html = await renderTab(char);
+    expect(html).not.toContain('Rolled in your downtime form');
+    expect(html).not.toContain('This result is final');
+    expect(html).toContain('Stalking');              // the TM-Game roll rendered instead
+    expect(html).toContain('class="fvc-select"');    // ...with its own editable allocation UI
+  });
+
+  it('does not fabricate a zero-success locked result from a malformed payload', async () => {
+    const char = newChar();
+    scenario.story = { feeding: {}, lifecycle_state: 'final', status: 'final' };
+    scenario.subs = [gameSubmission(char._id)];
+
+    const html = await renderTab(char);
+    expect(html).not.toContain('<div class="feeding-suc">0</div>');
+  });
+
+  it('still accepts a legitimate zero-success roll', async () => {
+    scenario.story = storyFeedingBody();
+    scenario.story.feeding.rollResult.dice = [4, 2, 5];
+    scenario.story.feeding.rollResult.successes = 0;
+    const html = await renderTab(newChar());
+    expect(html).toContain('Rolled in your downtime form');
+    expect(html).toContain('<div class="feeding-suc">0</div>');
+  });
+});
+
+describe('review Low: a confirmation is remembered per cycle, not per character', () => {
+  it('does not hide the NEW cycle\'s confirm controls after the active cycle changes', async () => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 0 });
+    scenario.tracker = { character_id: char._id, aggravated: 0, influence: 0 };
+
+    await renderTab(char);
+    await pane.click('#feed-confirm-btn');
+    expect(pane._html).toContain('Feed confirmed');
+
+    // The ST opens the next game's cycle; the player never reloaded the page.
+    scenario.cycle = CYCLE2;
+    const html = await renderTab(char);
+
+    expect(html).not.toContain('Feed confirmed');
+    expect(html).toContain('id="feed-confirm-btn"');
+    await pane.click('#feed-confirm-btn');
+    expect(scenario.puts).toHaveLength(2);
+  });
+
+  it('still shows the confirmed record for the cycle it was recorded against', async () => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 0 });
+    scenario.tracker = { character_id: char._id, aggravated: 0, influence: 0 };
+
+    await renderTab(char);
+    await pane.click('#feed-confirm-btn');
+    const html = await renderTab(char);   // same cycle, re-rendered
+    expect(html).toContain('Feed confirmed');
+    expect(html).not.toContain('id="feed-confirm-btn"');
+  });
+});
+
+describe('review Medium: a confirm write cannot be started twice', () => {
+  it('ignores a second click while the first write is in flight', async () => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 2 });
+    scenario.tracker = { character_id: char._id, aggravated: 3, influence: 0 };
+
+    await renderTab(char);
+    // Both clicks fire before either write settles - the two-tabs/double-click
+    // race, in one process.
+    await Promise.all([pane.click('#feed-confirm-btn'), pane.click('#feed-confirm-btn')]);
+
+    expect(scenario.puts).toHaveLength(1);
+    expect(scenario.puts[0].aggravated).toBe(1);
+  });
+});
 
 describe('the existing ST confirm write shape is unchanged', () => {
   it('still writes exactly { vitae, influence } on a TM-Game-sourced roll', async () => {
