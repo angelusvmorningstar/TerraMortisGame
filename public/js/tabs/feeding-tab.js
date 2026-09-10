@@ -6,9 +6,12 @@
  * One roll, then locked. STs can re-run.
  *
  * States: loading → ready → rolled | no_submission (generic picker)
+ *                 → rolled-from-form (Epic 12: the roll already happened in TM
+ *                   Story's downtime form; read-only here, never re-rollable)
  */
 
 import { apiGet, apiPut } from '../data/api.js';
+import { fetchStoryFeeding } from '../data/story-feeding.js';
 import { getFeedingCycle } from '../downtime/db.js';
 import { esc, displayName, hasAoE } from '../data/helpers.js';
 import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecStr, calcVitaeMax } from '../data/accessors.js';
@@ -36,7 +39,7 @@ function cntSuc(cols) { let s = 0; cols.forEach(col => { if (col.r.s) s++; col.c
 
 let currentChar = null;
 let container = null;
-let feedingState = 'loading'; // loading | ready | rolled | no_submission | deferred
+let feedingState = 'loading'; // loading | ready | rolled | no_submission | deferred | rolled-from-form
 let declaredMethod = null; // FEED_METHODS entry from downtime submission
 let declaredDisc = '';
 let declaredSpec = '';
@@ -63,6 +66,22 @@ let stRollResult = null; // ST's roll from admin processing (feeding_roll)
 let currentSub = null; // full submission doc for summary rendering
 let vitateTally = null; // feeding_vitae_tally from ST processing
 let _liveTerrDocs = []; // cached from /api/territories — used by territory-key lookups (2026-06-20)
+// Epic 12 (Story 12.2): TM Story's own `content.feeding` sub-document for the
+// active cycle, fetched through Story 12.1's read-only client. Non-null ONLY
+// when it carries a real rollResult, which is what makes it authoritative.
+let storyFeeding = null;
+// The active cycle's _id as a string. Also the value of the tracker_state
+// idempotency marker written when a form-sourced roll's aggHealed is applied.
+let activeCycleId = null;
+// The raw tracker_state document, read once per render pass (ST only). Carries
+// fields tracker.js's own in-memory cache does not map, notably the
+// feeding_agg_healed_cycle_id marker.
+let trackerDoc = null;
+// The tracker_state field the aggHealed idempotency marker lives in. TM Game
+// has no write path to tm_story (Story 12.2 grounding), so an "already applied"
+// flag cannot be written back onto TM Story's submission — it lives here, in
+// the one collection this tab already writes to.
+export const AGG_HEALED_MARKER = 'feeding_agg_healed_cycle_id';
 const _stConfirmed = {}; // charId → {vitae, infSpent} — persists within session
 
 // Resolve a feeding_territories grid key (slug OR ObjectId hex string) to a
@@ -106,6 +125,9 @@ export async function renderFeedingTab(el, char) {
   stRollResult = null;
   currentSub = null;
   vitateTally = null;
+  storyFeeding = null;
+  activeCycleId = null;
+  trackerDoc = null;
 
   // Fetch live territory ambience from DB (used by computeVitateTally)
   let liveTerrDocs = [];
@@ -171,6 +193,36 @@ export async function renderFeedingTab(el, char) {
     </div>`;
     container = document.getElementById('feeding-left-pane');
     renderFeedingHistoryPane(document.getElementById('feeding-right-pane'), char);
+    return;
+  }
+
+  activeCycleId = String(activeCycle._id);
+
+  // ── Epic 12 (Story 12.2): TM Story's own downtime form is where the roll
+  // actually happens now. Epic 8 moved downtime storage to tm_story, so
+  // `mySub` below is structurally absent for Game 8 and every cycle after it —
+  // the cross-app read is the only place a live roll can come from.
+  //
+  // PRECEDENCE (AC 1): a real rollResult from TM Story is authoritative for
+  // this cycle and the TM-Game-sourced lookup below is skipped entirely. Any
+  // other outcome (fetch failed, no submission, historical document with no
+  // rollResult) falls through to the existing state machine unchanged, which
+  // still serves residual old-format data correctly.
+  const storyRes = await fetchStoryFeeding(String(char._id), activeCycleId);
+  if (currentChar !== charSnapshot) return;
+
+  if (storyRes?.ok && storyRes.data?.feeding?.rollResult) {
+    storyFeeding = storyRes.data.feeding;
+    feedingState = 'rolled-from-form';
+    // Only the ST confirm panel consumes the tracker document (current
+    // Aggravated count + the aggHealed idempotency marker), so only an ST pays
+    // for the request.
+    if (isSTRole()) {
+      trackerDoc = await readTrackerDoc(String(char._id));
+      if (currentChar !== charSnapshot) return;
+    }
+    mountFeedingPanes(el, char);
+    render();
     return;
   }
 
@@ -300,14 +352,39 @@ export async function renderFeedingTab(el, char) {
   }
 
   // Set up split layout
+  mountFeedingPanes(el, char);
+
+  render();
+}
+
+/**
+ * The tab's two-pane shell. Extracted verbatim (Story 12.2) so the new
+ * form-sourced state mounts exactly the layout every other fall-through state
+ * already does, rather than carrying a second copy of the same markup.
+ */
+function mountFeedingPanes(el, char) {
   el.innerHTML = `<div class="tab-split">
     <div class="tab-split-left" id="feeding-left-pane"></div>
     <div class="tab-split-right" id="feeding-right-pane"></div>
   </div>`;
   container = document.getElementById('feeding-left-pane');
   renderFeedingHistoryPane(document.getElementById('feeding-right-pane'), char);
+}
 
-  render();
+/**
+ * The raw tracker_state document for a character.
+ *
+ * tracker.js's in-memory cache maps a fixed field list (see its `ensureLoaded`)
+ * and drops anything else, so the aggHealed idempotency marker cannot be read
+ * back through it. A 404 simply means this character has no tracker document
+ * yet: no marker, no damage, nothing to fail over.
+ */
+async function readTrackerDoc(charId) {
+  try {
+    return await apiGet('/api/tracker_state/' + charId);
+  } catch {
+    return null;
+  }
 }
 
 async function renderFeedingHistoryPane(el, char) {
@@ -626,6 +703,189 @@ function fvcConseqClass(v) {
   return 'fvc-critical';
 }
 
+/**
+ * The ST's "Confirm Feed" panel.
+ *
+ * Extracted verbatim from render()'s `rolled` branch by Story 12.2 so the new
+ * form-sourced state reuses the SAME panel, and the same single tracker_state
+ * write, rather than growing a second one beside it.
+ *
+ * `stDefault`   the vitae stepper's starting value.
+ * `aggHealed`   Aggravated boxes the downtime form recorded this feed as
+ *               healing. Always 0 on the existing TM-Game-sourced path, which
+ *               therefore renders exactly as it did before this story.
+ * `aggApplied`  the tracker_state marker already names this cycle, so the
+ *               healing has been applied once and must not be offered again.
+ * `formSourced` this is a TM Story roll, so no vitae tally was computed for it.
+ */
+function renderStConfirmPanel({ stDefault, aggHealed = 0, aggApplied = false, formSourced = false }) {
+  const charId = String(currentChar._id);
+  const confirmed = _stConfirmed[charId];
+  const vitaeMax = calcVitaeMax(currentChar);
+  const infMax   = calcTotalInfluence(currentChar);
+  let h = `<div class="feed-st-confirm">`;
+  if (confirmed) {
+    const vitaeStr = confirmed.vitaeMax != null
+      ? `Vitae ${confirmed.vitae}/${confirmed.vitaeMax}`
+      : `Vitae \u2192 ${confirmed.vitae}`;
+    const infStr = confirmed.infAfter != null && confirmed.infMax != null
+      ? `Inf ${confirmed.infAfter}/${confirmed.infMax}`
+      : confirmed.infSpent > 0 ? `Inf \u2212${confirmed.infSpent}` : null;
+    let rec = vitaeStr;
+    if (infStr) rec += ` \u2002|\u2002 ${infStr}`;
+    if (confirmed.aggHealed) rec += ` \u2002|\u2002 Agg \u2212${confirmed.aggHealed}`;
+    h += `<div class="feed-confirmed-record">\u2713 Feed confirmed \u2014 ${rec}</div>`;
+    h += `<button class="feed-reconfirm-btn" id="feed-reconfirm-btn">Edit</button>`;
+  } else {
+    // Vitae row
+    h += `<div class="feed-st-row">`;
+    h += `<div class="feed-st-row-lbl">Vitae Gained</div>`;
+    h += `<div class="feed-st-row-ctrl">`;
+    h += `<button class="feed-adj" id="feed-confirm-adj-down">\u2212</button>`;
+    h += `<span class="feed-confirm-val" id="feed-confirm-n" data-vit-max="${vitaeMax}">${stDefault}</span>`;
+    h += `<button class="feed-adj" id="feed-confirm-adj-up">+</button>`;
+    h += `</div>`;
+    h += `<div class="feed-st-row-max">/ ${vitaeMax}</div>`;
+    h += `</div>`;
+    // Influence row
+    h += `<div class="feed-st-row">`;
+    h += `<div class="feed-st-row-lbl">Influence Remaining</div>`;
+    h += `<div class="feed-st-row-ctrl">`;
+    h += `<button class="feed-adj" id="feed-inf-adj-down">\u2212</button>`;
+    const _curInf = trackerRead(String(currentChar._id))?.inf ?? infMax;
+    h += `<span class="feed-inf-val" id="feed-inf-spent" data-inf-max="${infMax}">${_curInf}</span>`;
+    h += `<button class="feed-adj" id="feed-inf-adj-up">+</button>`;
+    h += `</div>`;
+    h += `<div class="feed-st-row-max">/ ${infMax}</div>`;
+    h += `</div>`;
+    // Aggravated row (Story 12.2, AC 3/AC 4). Read-only by design: the figure
+    // is the player's own committed declaration from the downtime form, and
+    // this app cannot correct a TM-Story-sourced roll (see the ST override
+    // note). #feed-agg-n is also the confirm handler's ONLY source for the
+    // amount, so an already-applied cycle cannot be applied twice: the element
+    // simply is not rendered.
+    if (aggHealed > 0) {
+      if (aggApplied) {
+        h += `<div class="feed-st-row" id="feed-agg-applied">`;
+        h += `<div class="feed-st-row-lbl">Aggravated Healed</div>`;
+        h += `<div class="feed-st-row-ctrl">\u2713 ${aggHealed} already applied this cycle</div>`;
+        h += `</div>`;
+      } else {
+        h += `<div class="feed-st-row" id="feed-agg-row">`;
+        h += `<div class="feed-st-row-lbl">Aggravated Healed</div>`;
+        h += `<div class="feed-st-row-ctrl">`;
+        h += `<span class="feed-confirm-val" id="feed-agg-n" data-agg-healed="${aggHealed}">\u2212${aggHealed}</span>`;
+        h += `</div>`;
+        h += `<div class="feed-st-row-max">from the downtime form</div>`;
+        h += `</div>`;
+      }
+    }
+    if (formSourced) {
+      h += `<p class="feeding-state-detail">Bonus vitae (Herd, Oath of Fealty, ambience) is not tallied for a downtime-form roll yet: add it with the stepper.</p>`;
+    }
+    h += `<button class="feed-confirm-btn" id="feed-confirm-btn">Confirm Feed</button>`;
+  }
+  h += `</div>`;
+  return h;
+}
+
+/**
+ * Story 12.2: the read-only view of a roll the player already made in TM
+ * Story's downtime form.
+ *
+ * Renders nothing the player can act on. There is deliberately no roll button,
+ * no vessel <select> and no allocation confirm here: the roll and the vessel
+ * allocation are both already committed, and re-asking for either is the exact
+ * double-work this story exists to remove. The dice/success markup and the
+ * vessel-card classes are the existing `rolled` state's own (Story 12.4
+ * restyles the whole tab, so nothing new is invented here).
+ */
+function renderFormSourcedRoll(isST) {
+  const f = storyFeeding;
+  const rr = f.rollResult || {};
+  const dice = Array.isArray(rr.dice) ? rr.dice : [];
+  const successes = Number.isInteger(rr.successes) ? rr.successes : 0;
+  const vessels = Array.isArray(f.vesselVitae) ? f.vesselVitae : [];
+  const vesselTotal = vessels.reduce((a, b) => a + (Number(b) || 0), 0);
+
+  let h = '<div class="feeding-result">';
+  h += '<p class="feeding-state-detail">Rolled in your downtime form. This result is final.</p>';
+
+  if (f.method) {
+    h += `<p class="feeding-method-label">Method: <strong>${esc(f.method)}</strong>`;
+    if (rr.rote)      h += ' <span class="feeding-rote-badge">Rote</span>';
+    if (rr.again === 9) h += ' <span class="feeding-again-badge">9-Again</span>';
+    if (rr.again === 8) h += ' <span class="feeding-again-badge">8-Again</span>';
+    if (rr.chance)    h += ' <span class="feeding-again-badge">Chance die</span>';
+    h += '</p>';
+  }
+  if (Number.isInteger(rr.pool)) {
+    h += '<div class="feeding-pool-display">';
+    h += `<span class="feeding-pool-total">${rr.pool} dice</span>`;
+    h += '</div>';
+  }
+
+  h += `<div class="feeding-suc">${successes}</div>`;
+  h += `<div class="feeding-suc-label">success${successes !== 1 ? 'es' : ''}`;
+  if (rr.exceptional) h += ' (exceptional)';
+  h += '</div>';
+
+  h += '<div class="feeding-dice-row">';
+  for (const d of dice) {
+    let cls = 'feed-die';
+    if (d >= 8) cls += ' fd-s';
+    if (d === 1) cls += ' fd-1';
+    h += `<span class="${cls}">${d}</span>`;
+  }
+  h += '</div>';
+
+  if (rr.dramatic_failure) {
+    h += '<div class="feeding-dramatic">Dramatic failure \u2014 see your Storyteller at game before feeding.</div>';
+  }
+
+  if (!vessels.length) {
+    h += '<p class="feeding-no-vessels">No vessels recorded this hunt.</p>';
+  } else if (f.bloodType === 'Animal') {
+    // An Animal feed records ONE pooled vitae total, not per-vessel harm (TM
+    // Story's own normaliseVesselVitae, public/js/downtime-form/content-shape.js)
+    // - the 0-7 harm scale fvcConseqText encodes does not apply to it, so no
+    // consequence label is rendered for that shape.
+    h += '<div class="feeding-vessels-grid">';
+    h += '<div class="feeding-vessel-card">';
+    h += '<span class="fvc-label">Animal vitae</span>';
+    h += `<span class="fvc-val">${vesselTotal} vitae</span>`;
+    h += '</div></div>';
+  } else {
+    h += '<div class="feeding-vessels-grid">';
+    vessels.forEach((v, i) => {
+      h += '<div class="feeding-vessel-card">';
+      h += `<span class="fvc-label">Vessel ${i + 1}</span>`;
+      h += `<span class="fvc-val">${v} vitae</span>`;
+      h += `<span class="fvc-consequence ${fvcConseqClass(v)}">${fvcConseqText(v)}</span>`;
+      h += '</div>';
+    });
+    h += '</div>';
+  }
+  if (vessels.length) {
+    h += `<div class="fvc-total">Total Vitae: <strong>${vesselTotal}</strong></div>`;
+    h += '<div class="fvc-alloc-badge">\u2713 Allocation recorded in the downtime form</div>';
+  }
+  h += '</div>';
+
+  if (isST) {
+    const aggHealed = Number.isInteger(f.aggHealed) && f.aggHealed > 0 ? f.aggHealed : 0;
+    const aggApplied = !!activeCycleId
+      && String(trackerDoc?.[AGG_HEALED_MARKER] || '') === activeCycleId;
+    h += renderStConfirmPanel({
+      stDefault: vesselTotal,
+      aggHealed,
+      aggApplied,
+      formSourced: true,
+    });
+  }
+  return h;
+}
+
 function render() {
   if (!container) return;
   const isST = isSTRole();
@@ -820,49 +1080,13 @@ function render() {
         ? vitaeAllocation.reduce((a, b) => a + b, 0)
         : safeVitae;
       const stBonus = vitateTally?.total_bonus ?? 0;
-      const stDefault = stVesselTotal + stBonus;
-      const charId = String(currentChar._id);
-      const confirmed = _stConfirmed[charId];
-      const vitaeMax = calcVitaeMax(currentChar);
-      const infMax   = calcTotalInfluence(currentChar);
-      h += `<div class="feed-st-confirm">`;
-      if (confirmed) {
-        const vitaeStr = confirmed.vitaeMax != null
-          ? `Vitae ${confirmed.vitae}/${confirmed.vitaeMax}`
-          : `Vitae \u2192 ${confirmed.vitae}`;
-        const infStr = confirmed.infAfter != null && confirmed.infMax != null
-          ? `Inf ${confirmed.infAfter}/${confirmed.infMax}`
-          : confirmed.infSpent > 0 ? `Inf \u2212${confirmed.infSpent}` : null;
-        let rec = vitaeStr;
-        if (infStr) rec += ` \u2002|\u2002 ${infStr}`;
-        h += `<div class="feed-confirmed-record">\u2713 Feed confirmed \u2014 ${rec}</div>`;
-        h += `<button class="feed-reconfirm-btn" id="feed-reconfirm-btn">Edit</button>`;
-      } else {
-        // Vitae row
-        h += `<div class="feed-st-row">`;
-        h += `<div class="feed-st-row-lbl">Vitae Gained</div>`;
-        h += `<div class="feed-st-row-ctrl">`;
-        h += `<button class="feed-adj" id="feed-confirm-adj-down">\u2212</button>`;
-        h += `<span class="feed-confirm-val" id="feed-confirm-n" data-vit-max="${vitaeMax}">${stDefault}</span>`;
-        h += `<button class="feed-adj" id="feed-confirm-adj-up">+</button>`;
-        h += `</div>`;
-        h += `<div class="feed-st-row-max">/ ${vitaeMax}</div>`;
-        h += `</div>`;
-        // Influence row
-        h += `<div class="feed-st-row">`;
-        h += `<div class="feed-st-row-lbl">Influence Remaining</div>`;
-        h += `<div class="feed-st-row-ctrl">`;
-        h += `<button class="feed-adj" id="feed-inf-adj-down">\u2212</button>`;
-        const _curInf = trackerRead(String(currentChar._id))?.inf ?? infMax;
-        h += `<span class="feed-inf-val" id="feed-inf-spent" data-inf-max="${infMax}">${_curInf}</span>`;
-        h += `<button class="feed-adj" id="feed-inf-adj-up">+</button>`;
-        h += `</div>`;
-        h += `<div class="feed-st-row-max">/ ${infMax}</div>`;
-        h += `</div>`;
-        h += `<button class="feed-confirm-btn" id="feed-confirm-btn">Confirm Feed</button>`;
-      }
-      h += `</div>`;
+      h += renderStConfirmPanel({ stDefault: stVesselTotal + stBonus });
     }
+  }
+
+  // ── ROLLED IN THE DOWNTIME FORM (TM Story, Epic 12 Story 12.2) ──
+  if (feedingState === 'rolled-from-form' && storyFeeding) {
+    h += renderFormSourcedRoll(isST);
   }
 
   // ── ST OVERRIDE PANEL ──
@@ -876,6 +1100,15 @@ function render() {
       h += '<div class="feeding-st-override">';
       h += '<span class="feeding-st-label">ST Override</span>';
       h += '<button id="feeding-reroll-btn" class="feeding-roll-btn">Reset Roll (ST)</button>';
+      h += '</div>';
+    } else if (feedingState === 'rolled-from-form') {
+      // Story 12.2, AC 2: deliberately NOT a Reset Roll button. Every existing
+      // ST override on this tab writes to tm_game.downtime_submissions, and a
+      // form-sourced roll does not live there - TM Game holds no write path to
+      // tm_story at all, so a button here could only no-op or throw.
+      h += '<div class="feeding-st-override">';
+      h += '<span class="feeding-st-label">ST Override</span>';
+      h += '<p class="feeding-state-detail">This roll was made in the downtime form and cannot be reset from here. Corrections happen in the TM Story downtime form itself, or through the downtime-processing scripts.</p>';
       h += '</div>';
     }
   }
@@ -995,12 +1228,42 @@ function wireEvents() {
     const infAfter = infEl ? Math.max(0, parseInt(infEl.textContent) || 0) : infMax;
     const infSpent = infMax - infAfter;
 
+    // Story 12.2 (AC 3/AC 4): a downtime-form roll's own aggHealed rides THIS
+    // write, not a second one. #feed-agg-n is rendered only when there is a
+    // real, not-yet-applied figure for this cycle (renderStConfirmPanel), so
+    // reading the amount off the DOM is also the idempotency guard: an
+    // already-applied cycle, and every TM-Game-sourced roll, has no element to
+    // read and takes the untouched vitae+influence path below.
+    const aggEl = container.querySelector('#feed-agg-n');
+    const aggHealed = aggEl ? Math.max(0, parseInt(aggEl.dataset.aggHealed, 10) || 0) : 0;
+    const body = { vitae: n, influence: infAfter };
+    let newAgg = null;
+    if (aggHealed > 0 && activeCycleId) {
+      // Cache first, matching the influence row's own precedence just above:
+      // tracker.js's cache tracks manual Tracker-tab adjustments and WS frames
+      // made since this tab last read the server, and falls back to the raw
+      // document this render pass fetched.
+      const cached = trackerReadRaw(charId);
+      const curAgg = (cached && cached.aggravated != null)
+        ? cached.aggravated
+        : (trackerDoc && trackerDoc.aggravated != null ? trackerDoc.aggravated : 0);
+      newAgg = Math.max(0, curAgg - aggHealed);
+      body.aggravated = newAgg;
+      body[AGG_HEALED_MARKER] = activeCycleId;
+    }
+
     // Write vitae and influence to API — single source of truth for tracker state
     try {
-      await apiPut('/api/tracker_state/' + charId, { vitae: n, influence: infAfter });
+      await apiPut('/api/tracker_state/' + charId, body);
       // Keep tracker.js in-memory cache in sync so the tracker card re-renders correctly
       const _raw = trackerReadRaw(charId);
       if (_raw) _raw.inf = infAfter;
+      if (newAgg != null) {
+        if (_raw) _raw.aggravated = newAgg;
+        // Same for this tab's own copy, so the re-render below sees the marker
+        // and shows "already applied" rather than re-offering the healing.
+        trackerDoc = { ...(trackerDoc || {}), aggravated: newAgg, [AGG_HEALED_MARKER]: activeCycleId };
+      }
       // vitae_confirmed used by trackerAdj to clear confirmed marker on manual ST override
       try {
         const key = 'tm_tracker_local_' + charId;
@@ -1009,6 +1272,7 @@ function wireEvents() {
         localStorage.setItem(key, JSON.stringify(loc));
       } catch { /* ignore */ }
       const record = { vitae: n, vitaeMax, infSpent, infAfter, infMax };
+      if (aggHealed > 0) record.aggHealed = aggHealed;
       _stConfirmed[charId] = record;
       render();
     } catch (err) {

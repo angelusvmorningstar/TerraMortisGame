@@ -285,13 +285,20 @@ describe('fetchStoryFeeding - degrades safely', () => {
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  Scope guard - the Feeding tab is untouched by this story (AC 3, last line)
+//  Consumer - Story 12.2 wired this client into the Feeding tab
 // ═════════════════════════════════════════════════════════════════════════════
 
-describe('scope guard', () => {
-  it('is not wired into feeding-tab.js yet - Story 12.2 does that', () => {
+describe('consumer', () => {
+  // Until Story 12.2 landed this asserted the OPPOSITE: that feeding-tab.js was
+  // deliberately untouched ("Story 12.2 does that"). 12.2 has now done it, so
+  // the same guard is inverted rather than deleted - this module having no
+  // consumer at all would mean the read path is dead code again.
+  // Behaviour-level coverage of what the tab does with the data is in
+  // epic12.2-feeding-tab-form-roll.test.js, which executes the tab rather than
+  // reading it.
+  it('is wired into feeding-tab.js by Story 12.2', () => {
     const tab = stripComments(read('public/js/tabs/feeding-tab.js'));
-    expect(tab).not.toMatch(/story-feeding/);
-    expect(tab).not.toMatch(/fetchStoryFeeding/);
+    expect(tab).toMatch(/from '\.\.\/data\/story-feeding\.js'/);
+    expect(tab).toMatch(/fetchStoryFeeding\(/);
   });
 });

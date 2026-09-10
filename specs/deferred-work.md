@@ -1,5 +1,35 @@
 # Deferred Work
 
+## Deferred from: tm-admin.12.2 (Feeding tab reflects a downtime-form roll), 2026-09-10
+
+**`game/tracker.js`'s `saveToApi` writes `tracker_state` with an unguarded partial `$set` — no rev,
+version or compare-and-set — so two writers racing on the same character are last-write-wins today.**
+Pre-existing, not introduced by Story 12.2, and explicitly out of that story's scope (its AC 5 names
+this file as the place to record it).
+
+The mechanics: `saveToApi(charId, fields)` (`public/js/game/tracker.js:73-83`) optimistically merges
+`fields` into the module cache and fires `PUT /api/tracker_state/:id`; the route
+(`server/routes/tracker.js:29-47`) does `findOneAndUpdate(filter, { $set: { ...updates } }, { upsert:
+true })` with no precondition on the document it read. `trackerAdj` (line 268) reads the CACHED
+counters, applies a delta locally, then writes the WHOLE `persistedFields(cs)` set (line 300) — so a
+Tracker-tab +/- click and any other writer overlapping it do not merge, the later PUT simply restores
+its own stale copy of every field it carries. Real concurrent writers exist: the Tracker tab's manual
+adjusters, `reconcileInfluenceDT` (line 201, writes `influence` for every active character on tab
+open), the Feeding tab's ST confirm, and TM Admin writing the same collection.
+
+Story 12.2 makes the overlap slightly more likely (the Feeding tab's confirm now also carries
+`aggravated`, a field the Tracker tab's own damage buttons write), but does not make it categorically
+worse: the confirm is still ONE `apiPut` of exactly the fields it owns, not a new parallel write path,
+and it deliberately does not route through `trackerAdj`'s whole-`persistedFields` write, which would
+have widened the blast radius from three fields to seven.
+
+A real fix needs a decision first, not just a patch: either a document `rev` incremented server-side
+with a `$set` guarded on the rev the client read (409 on mismatch, client refetches), or narrowing
+counter writes to `$inc` so concurrent deltas compose instead of overwriting. `$inc` suits the damage
+and vitae counters; it does not suit `conditions` or the confirmed-vitae semantics, so the two
+approaches are not interchangeable across the whole document. No issue number assigned; opening one is
+Angelus's call. Suggested title: `guard-tracker-state-partial-writes`.
+
 ## Deferred from: issue-1122-pledge-pool-overcommit code review (2026-08-31)
 
 External adversarial review (Codex, 3-pass) of the render-time pledge-overcommitment indicator
