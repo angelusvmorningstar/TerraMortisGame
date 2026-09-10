@@ -38,14 +38,41 @@ export const STORY_API_PROD = 'https://tm-story-api.onrender.com';
 export const STORY_API_LOCAL = 'http://localhost:3000';
 export const STORY_API_OVERRIDE_KEY = 'tm_story_api_base';
 
-export function storyApiBase() {
-  if (typeof localStorage !== 'undefined') {
-    const override = localStorage.getItem(STORY_API_OVERRIDE_KEY);
-    if (override) return String(override).replace(/\/+$/, '');
+// External review finding (Codex, 2026-09-10, High): the override below used to be honoured
+// on ANY host, including production. Since it carries the Discord bearer token with it, that
+// meant any code able to write this one localStorage key - an XSS, a compromised extension, a
+// stale value left over from testing - could redirect the token to an arbitrary origin. Reproduced
+// live: a value of 'https://attacker.example/collect' silently exfiltrated the token from a
+// production hostname. Fixed by only ever consulting the override on localhost, and requiring the
+// parsed value to be a bare http(s) origin (no path/query/fragment/credentials) - it can point
+// local dev at a different port, never at a scheme or shape that could smuggle anything extra.
+function isBareHttpOrigin(value) {
+  let url;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
   }
-  return (typeof location !== 'undefined' && location.hostname === 'localhost')
-    ? STORY_API_LOCAL
-    : STORY_API_PROD;
+  return (url.protocol === 'http:' || url.protocol === 'https:')
+    && !url.username && !url.password
+    && (url.pathname === '' || url.pathname === '/')
+    && !url.search && !url.hash;
+}
+
+export function storyApiBase() {
+  const isLocalhost = typeof location !== 'undefined' && location.hostname === 'localhost';
+  if (isLocalhost && typeof localStorage !== 'undefined') {
+    let override = null;
+    try {
+      override = localStorage.getItem(STORY_API_OVERRIDE_KEY);
+    } catch {
+      // Storage access can throw (sandboxed/opaque origin, blocked storage) - fall through to
+      // the plain local default rather than propagate, matching this module's own
+      // never-throws contract.
+    }
+    if (override && isBareHttpOrigin(override)) return override.replace(/\/+$/, '');
+  }
+  return isLocalhost ? STORY_API_LOCAL : STORY_API_PROD;
 }
 
 // The contract is fixed by TM Story's own router mount
@@ -93,9 +120,16 @@ function unavailable(reason, httpStatus = 0, detail = null) {
 export async function fetchStoryFeeding(characterId, cycleId) {
   if (!characterId || !cycleId) return unavailable('bad-args');
 
-  const token = (typeof localStorage !== 'undefined')
-    ? localStorage.getItem('tm_auth_token')
-    : null;
+  // External review finding (Codex, 2026-09-10, Low): a bare `localStorage.getItem` here sat
+  // outside any try/catch, so a throwing accessor (a sandboxed/opaque origin, storage blocked by
+  // policy) turned this into a rejected promise - breaking the "never throws" contract the rest
+  // of this function is built around. Reproduced live with a throwing getter.
+  let token = null;
+  try {
+    if (typeof localStorage !== 'undefined') token = localStorage.getItem('tm_auth_token');
+  } catch {
+    return unavailable('no-token');
+  }
   if (!token) return unavailable('no-token');
 
   let res;

@@ -74,7 +74,8 @@ describe('storyApiBase', () => {
     expect(storyApiBase()).toBe(STORY_API_LOCAL);
   });
 
-  it('honours a localStorage override, trailing slashes trimmed', () => {
+  it('honours a bare-origin localStorage override on localhost, trailing slashes trimmed', () => {
+    globalThis.location = { hostname: 'localhost', pathname: '/index.html' };
     store.set(STORY_API_OVERRIDE_KEY, 'http://localhost:3100/');
     expect(storyApiBase()).toBe('http://localhost:3100');
   });
@@ -83,6 +84,45 @@ describe('storyApiBase', () => {
     // data/api.js resolves to '' in production (same-origin via the Netlify
     // proxy). This module must not, or the whole story is pointless.
     expect(storyApiBase()).not.toBe('');
+  });
+
+  // External review (Codex, 2026-09-10, High): the override used to be honoured on ANY host,
+  // including production - since it carries the Discord bearer token with it, that let anything
+  // able to write this one localStorage key redirect the token to an attacker-controlled origin.
+  // Reproduced live against a production hostname before the fix.
+  describe('override safety (Codex High finding)', () => {
+    it('is IGNORED on a production hostname, even a well-formed one', () => {
+      globalThis.location = { hostname: 'terramortisgame.netlify.app', pathname: '/index.html' };
+      store.set(STORY_API_OVERRIDE_KEY, 'https://attacker.example');
+      expect(storyApiBase()).toBe(STORY_API_PROD);
+    });
+
+    it('rejects an override carrying a path, query, fragment or credentials, even on localhost', () => {
+      globalThis.location = { hostname: 'localhost', pathname: '/index.html' };
+      for (const bad of [
+        'https://attacker.example/collect',
+        'http://localhost:3100/x',
+        'http://localhost:3100?x=1',
+        'http://localhost:3100#x',
+        'http://user:pass@localhost:3100',
+        'javascript:alert(1)',
+        'not a url',
+      ]) {
+        store.set(STORY_API_OVERRIDE_KEY, bad);
+        expect(storyApiBase()).toBe(STORY_API_LOCAL);
+      }
+    });
+
+    it('falls back to the local default when localStorage itself throws on localhost', () => {
+      globalThis.location = { hostname: 'localhost', pathname: '/index.html' };
+      const real = globalThis.localStorage;
+      globalThis.localStorage = { getItem: () => { throw new DOMException('denied', 'SecurityError'); } };
+      try {
+        expect(storyApiBase()).toBe(STORY_API_LOCAL);
+      } finally {
+        globalThis.localStorage = real;
+      }
+    });
   });
 });
 
@@ -217,6 +257,30 @@ describe('fetchStoryFeeding - degrades safely', () => {
     expect((await fetchStoryFeeding('', CYCLE)).reason).toBe('bad-args');
     expect((await fetchStoryFeeding(CHAR, null)).reason).toBe('bad-args');
     expect(f).not.toHaveBeenCalled();
+  });
+
+  // External review (Codex, 2026-09-10, Low): the token read used to sit outside any try/catch,
+  // so a throwing localStorage accessor (sandboxed/opaque origin, blocked storage) turned this
+  // into a rejected promise instead of the documented never-throws {ok:false} result. Reproduced
+  // live with a throwing getter before the fix.
+  it('degrades to no-token, never rejects, when localStorage itself throws', async () => {
+    const real = globalThis.localStorage;
+    globalThis.localStorage = { getItem: () => { throw new DOMException('denied', 'SecurityError'); } };
+    const f = vi.fn();
+    vi.stubGlobal('fetch', f);
+
+    try {
+      await expect(fetchStoryFeeding(CHAR, CYCLE)).resolves.toMatchObject({ ok: false, reason: 'no-token' });
+      expect(f).not.toHaveBeenCalled();
+    } finally {
+      globalThis.localStorage = real;
+    }
+  });
+
+  it('handles a 204 with no body as ok with null data', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => ({ ok: true, status: 204, json: async () => { throw new Error('no body'); } })));
+    const res = await fetchStoryFeeding(CHAR, CYCLE);
+    expect(res).toEqual({ ok: true, data: null, httpStatus: 204 });
   });
 });
 
