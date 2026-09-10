@@ -876,24 +876,31 @@ function renderVitaeTallyCard(tally, vessels = null) {
   // their treatment change; the tally computation above is untouched.
   //
   // Two faithful-port differences worth naming: TM Story colours the WHOLE ROW
-  // (.dt-vitae-row.dt-vitae-pos / .dt-vitae-cost) where .fvt-pos coloured only
+  // (.feed-ledger-row.feed-ledger-pos / -cost) where .fvt-pos coloured only
   // the number, and the `.fvt-divider` element is dropped because
-  // .dt-vitae-total carries its own border-top - keeping it drew two rules.
-  let h = '<div class="dt-vitae-budget">';
-  h += '<div class="dt-vitae-title">Vitae Sources</div>';
-  if (vessels !== null) h += `<div class="dt-vitae-row"><span>Vessels (from roll)</span><span>${vessels}</span></div>`;
-  if (tally.herd)         h += `<div class="dt-vitae-row dt-vitae-pos"><span>Herd</span><span>+${tally.herd}</span></div>`;
-  if (tally.oath_of_fealty) h += `<div class="dt-vitae-row dt-vitae-pos"><span>Oath of Fealty</span><span>+${tally.oath_of_fealty}</span></div>`;
+  // .feed-ledger-total carries its own border-top - keeping it drew two rules.
+  //
+  // Review fix (Codex, external, 12.4 Medium 1): the ported CLASS NAMES are
+  // `.feed-ledger*`, not TM Story's own `.dt-vitae-*`. Those names were already
+  // in use in THIS repo by the downtime form's unrelated Vitae Projection panel
+  // (downtime-form.js:7444), and sharing them restyled that panel while denying
+  // this card its own colours. Declarations are still TM Story's, verbatim; see
+  // the rule block at components.css for the full reasoning.
+  let h = '<div class="feed-ledger">';
+  h += '<div class="feed-ledger-title">Vitae Sources</div>';
+  if (vessels !== null) h += `<div class="feed-ledger-row"><span>Vessels (from roll)</span><span>${vessels}</span></div>`;
+  if (tally.herd)         h += `<div class="feed-ledger-row feed-ledger-pos"><span>Herd</span><span>+${tally.herd}</span></div>`;
+  if (tally.oath_of_fealty) h += `<div class="feed-ledger-row feed-ledger-pos"><span>Oath of Fealty</span><span>+${tally.oath_of_fealty}</span></div>`;
   if (tally.ambience != null && tally.ambience !== 0) {
     const lbl = tally.ambience_territory ? `Ambience (${tally.ambience_territory})` : 'Ambience';
-    const cls = tally.ambience > 0 ? ' dt-vitae-pos' : ' dt-vitae-cost';
+    const cls = tally.ambience > 0 ? ' feed-ledger-pos' : ' feed-ledger-cost';
     const sign = tally.ambience > 0 ? '+' : '';
-    h += `<div class="dt-vitae-row${cls}"><span>${esc(lbl)}</span><span>${sign}${tally.ambience}</span></div>`;
+    h += `<div class="feed-ledger-row${cls}"><span>${esc(lbl)}</span><span>${sign}${tally.ambience}</span></div>`;
   }
-  if (tally.ghouls)    h += `<div class="dt-vitae-row dt-vitae-cost"><span>Ghoul retainers</span><span>\u2212${tally.ghouls}</span></div>`;
-  if (tally.rite_cost) h += `<div class="dt-vitae-row dt-vitae-cost"><span>Rite costs</span><span>\u2212${tally.rite_cost}</span></div>`;
-  if (tally.manual)    h += `<div class="dt-vitae-row${tally.manual > 0 ? ' dt-vitae-pos' : ' dt-vitae-cost'}"><span>Adjustment</span><span>${tally.manual > 0 ? '+' : ''}${tally.manual}</span></div>`;
-  h += `<div class="dt-vitae-row dt-vitae-total"><span>Bonus vitae</span><span>+${tally.total_bonus}</span></div>`;
+  if (tally.ghouls)    h += `<div class="feed-ledger-row feed-ledger-cost"><span>Ghoul retainers</span><span>\u2212${tally.ghouls}</span></div>`;
+  if (tally.rite_cost) h += `<div class="feed-ledger-row feed-ledger-cost"><span>Rite costs</span><span>\u2212${tally.rite_cost}</span></div>`;
+  if (tally.manual)    h += `<div class="feed-ledger-row${tally.manual > 0 ? ' feed-ledger-pos' : ' feed-ledger-cost'}"><span>Adjustment</span><span>${tally.manual > 0 ? '+' : ''}${tally.manual}</span></div>`;
+  h += `<div class="feed-ledger-row feed-ledger-total"><span>Bonus vitae</span><span>+${tally.total_bonus}</span></div>`;
   h += '</div>';
   return h;
 }
@@ -979,20 +986,20 @@ function renderInfluenceWillpowerTally() {
   const wp  = ts ? `${ts.willpower} / ${calcWillpowerMax(currentChar)}` : 'Unavailable';
   const inf = ts ? `${ts.inf} / ${calcTotalInfluence(currentChar)}` : 'Unavailable';
 
-  // Story 12.4: the same .dt-vitae-budget ledger as the Vitae Sources card
-  // above, so the two tally cards read as one component in two instances - the
+  // Story 12.4: the same .feed-ledger ledger as the Vitae Sources card above,
+  // so the two tally cards read as one component in two instances - the
   // form's own treatment. `feed-tally` and the three ids are behavioural
   // anchors (Story 12.3's tests read them) and are untouched.
-  let h = '<div class="dt-vitae-budget feed-tally" id="feed-tally">';
-  h += '<div class="dt-vitae-title">Influence and Willpower</div>';
-  h += `<div class="dt-vitae-row"><span>Willpower</span><span id="feed-tally-wp">${esc(wp)}</span></div>`;
-  h += `<div class="dt-vitae-row"><span>Influence (current)</span><span id="feed-tally-inf">${esc(inf)}</span></div>`;
+  let h = '<div class="feed-ledger feed-tally" id="feed-tally">';
+  h += '<div class="feed-ledger-title">Influence and Willpower</div>';
+  h += `<div class="feed-ledger-row"><span>Willpower</span><span id="feed-tally-wp">${esc(wp)}</span></div>`;
+  h += `<div class="feed-ledger-row"><span>Influence (current)</span><span id="feed-tally-inf">${esc(inf)}</span></div>`;
   if (!ts) {
     h += '<p class="feeding-state-detail">Your tracker could not be read just now, so these figures are not shown rather than guessed at. Reload to try again.</p>';
   }
   if (declared !== null) {
     const shown = declared === 'unavailable' ? 'Unavailable' : String(declared);
-    h += '<div class="dt-vitae-row"><span>Influence declared this cycle (not yet processed)</span>';
+    h += '<div class="feed-ledger-row"><span>Influence declared this cycle (not yet processed)</span>';
     h += `<span id="feed-tally-declared" data-declared="${esc(shown)}">${esc(shown)}</span></div>`;
     h += '<p class="feeding-state-detail">Declared spending is not taken off the current total until your Storyteller processes the downtime.</p>';
   }

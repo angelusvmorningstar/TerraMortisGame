@@ -363,7 +363,9 @@
      theme.css (249, 289, 294). --crim-readable exists in the DARK palette only
      in TM Story too: it is the readable stand-in for --crim (#8B0000) against a
      dark surface, and TM Story's downtime-form.css uses it in exactly three
-     dark-mode overrides (.dt-vitae-cost, .vd-tier.vd-serious, .vd-bp-summary).
+     dark-mode overrides (.dt-vitae-cost - carried here as .feed-ledger-cost,
+     renamed off a name collision, see components.css - .vd-tier.vd-serious and
+     .vd-bp-summary).
      TM Game's Suite defaults to dark (index.html:27), so those three overrides
      matter MORE here than they do there, not less. */
   --good:#5A9A5F;--warn:#C9A24A;

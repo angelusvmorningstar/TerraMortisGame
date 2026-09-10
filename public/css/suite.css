@@ -1597,9 +1597,11 @@ details.city-section[open] > .city-section-hd::before { transform: rotate(90deg)
 /* ── ST Roll Result ── */
 
 /* ── Vitae Tally Card (player portal) ──
-   Story 12.4: `.fvt-pos .fvt-val` removed - the card is now .dt-vitae-budget /
-   .dt-vitae-row.dt-vitae-pos (TM Story's Vitae Projection ledger, ported into
-   components.css), whose positive rows take --good. That token is now declared
+   Story 12.4: `.fvt-pos .fvt-val` removed - the card is now .feed-ledger /
+   .feed-ledger-row.feed-ledger-pos (TM Story's Vitae Projection ledger, ported
+   into components.css under names of its own, because TM Story's own
+   `.dt-vitae-*` names are taken here by the downtime form's unrelated Vitae
+   Projection panel), whose positive rows take --good. That token is now declared
    in BOTH of TM Game's palettes (theme.css), so no parchment-only override is
    needed here the way --green-dk needed one. */
 

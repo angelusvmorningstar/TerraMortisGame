@@ -4290,15 +4290,35 @@ html:not([data-theme="dark"]) .sk-spec-row  span { color: var(--crim) !important
 .vd-vitae-count { font-size: 11.5px; color: var(--txt3); }
 .vd-summary { font-size: 12px; color: var(--txt3); margin-top: 10px; }
 
-/* --- the Vitae Projection ledger (downtime-form.css:833-839) --- */
-.dt-vitae-budget { margin-top: 14px; padding: 12px 14px; background: var(--surf1); border: 1px solid var(--bdr); border-radius: var(--radius-md); }
-.feeding-result .dt-vitae-budget, .feeding-wrap > .dt-vitae-budget { text-align: left; }
-.dt-vitae-title { font-family: var(--type-heading); font-size: 12px; color: var(--gold2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .05em; }
-.dt-vitae-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; color: var(--txt2); }
-.dt-vitae-pos { color: var(--good); }
-.dt-vitae-cost { color: var(--crim); }
-[data-theme="dark"] .dt-vitae-cost { color: var(--crim-readable); }
-.dt-vitae-total { border-top: 1px solid var(--bdr); margin-top: 6px; padding-top: 6px; font-weight: 700; color: var(--gold2); }
+/* --- the Vitae Projection ledger (downtime-form.css:833-839) ---
+   NAME COLLISION, fixed after external review (Codex, Story 12.4 Medium 1).
+   These declarations are TM Story's, ported verbatim, but their ORIGINAL class
+   names could not come with them: `.dt-vitae-budget/-row/-pos/-cost/-total` are
+   ALREADY TAKEN in this repo by a completely unrelated pre-existing feature -
+   the downtime form's own Vitae Projection panel (components.css:3699-3742,
+   markup at public/js/tabs/downtime-form.js:7444-7462, covered by
+   tests/dt-vitae-projection.spec.js and three more dt-form specs).
+
+   Sharing the names broke BOTH features at once: being later in the file, this
+   block silently restyled the downtime form's panel in both themes, while the
+   older, MORE SPECIFIC `.dt-vitae-cost span:last-child` / `.dt-vitae-pos
+   span:last-child` rules (3721-3722) beat these row-level colours, so the
+   feeding ledger never got --good/--crim-readable at all.
+
+   Renamed rather than namespaced under a `.feeding-wrap` parent: a parent
+   selector would leave BOTH rule sets matching the same elements and turn every
+   property into a specificity race (the 3699 block's own font-size and its
+   `span:last-child` colours would still have had to be fought off one by one).
+   Distinct names mean neither feature can reach the other at all. The prefix
+   follows this tab's own `feed-tally` / `feeding-*` convention. --- */
+.feed-ledger { margin-top: 14px; padding: 12px 14px; background: var(--surf1); border: 1px solid var(--bdr); border-radius: var(--radius-md); }
+.feeding-result .feed-ledger, .feeding-wrap > .feed-ledger { text-align: left; }
+.feed-ledger-title { font-family: var(--type-heading); font-size: 12px; color: var(--gold2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .05em; }
+.feed-ledger-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; color: var(--txt2); }
+.feed-ledger-pos { color: var(--good); }
+.feed-ledger-cost { color: var(--crim); }
+[data-theme="dark"] .feed-ledger-cost { color: var(--crim-readable); }
+.feed-ledger-total { border-top: 1px solid var(--bdr); margin-top: 6px; padding-top: 6px; font-weight: 700; color: var(--gold2); }
 
 /* --- the aggravated-healing boxes (downtime-form.css:908-914, Epic-47).
    DUAL-CODED, never colour alone: an unhealed box stays red, a healed box
