@@ -870,22 +870,30 @@ function computeVitateTally(char, sub, liveTerrDocs = []) {
 // ── Render vitae breakdown card ───────────────────────────────────────────────
 function renderVitaeTallyCard(tally, vessels = null) {
   if (!tally) return '';
-  let h = '<div class="fvt-card">';
-  h += '<div class="fvt-title">Vitae Sources</div>';
-  if (vessels !== null) h += `<div class="fvt-row"><span class="fvt-label">Vessels (from roll)</span><span class="fvt-val">${vessels}</span></div>`;
-  if (tally.herd)         h += `<div class="fvt-row fvt-pos"><span class="fvt-label">Herd</span><span class="fvt-val">+${tally.herd}</span></div>`;
-  if (tally.oath_of_fealty) h += `<div class="fvt-row fvt-pos"><span class="fvt-label">Oath of Fealty</span><span class="fvt-val">+${tally.oath_of_fealty}</span></div>`;
+  // Story 12.4: recomposed onto TM Story's own "Vitae Projection" ledger
+  // (downtime-form.css:833-839, rendered by its sections/feeding.js:560-566).
+  // Same row/label/value SHAPE as the old .fvt-card - only the class names and
+  // their treatment change; the tally computation above is untouched.
+  //
+  // Two faithful-port differences worth naming: TM Story colours the WHOLE ROW
+  // (.dt-vitae-row.dt-vitae-pos / .dt-vitae-cost) where .fvt-pos coloured only
+  // the number, and the `.fvt-divider` element is dropped because
+  // .dt-vitae-total carries its own border-top - keeping it drew two rules.
+  let h = '<div class="dt-vitae-budget">';
+  h += '<div class="dt-vitae-title">Vitae Sources</div>';
+  if (vessels !== null) h += `<div class="dt-vitae-row"><span>Vessels (from roll)</span><span>${vessels}</span></div>`;
+  if (tally.herd)         h += `<div class="dt-vitae-row dt-vitae-pos"><span>Herd</span><span>+${tally.herd}</span></div>`;
+  if (tally.oath_of_fealty) h += `<div class="dt-vitae-row dt-vitae-pos"><span>Oath of Fealty</span><span>+${tally.oath_of_fealty}</span></div>`;
   if (tally.ambience != null && tally.ambience !== 0) {
     const lbl = tally.ambience_territory ? `Ambience (${tally.ambience_territory})` : 'Ambience';
-    const cls = tally.ambience > 0 ? ' fvt-pos' : ' fvt-neg';
+    const cls = tally.ambience > 0 ? ' dt-vitae-pos' : ' dt-vitae-cost';
     const sign = tally.ambience > 0 ? '+' : '';
-    h += `<div class="fvt-row${cls}"><span class="fvt-label">${esc(lbl)}</span><span class="fvt-val">${sign}${tally.ambience}</span></div>`;
+    h += `<div class="dt-vitae-row${cls}"><span>${esc(lbl)}</span><span>${sign}${tally.ambience}</span></div>`;
   }
-  if (tally.ghouls)    h += `<div class="fvt-row fvt-neg"><span class="fvt-label">Ghoul retainers</span><span class="fvt-val">\u2212${tally.ghouls}</span></div>`;
-  if (tally.rite_cost) h += `<div class="fvt-row fvt-neg"><span class="fvt-label">Rite costs</span><span class="fvt-val">\u2212${tally.rite_cost}</span></div>`;
-  if (tally.manual)    h += `<div class="fvt-row${tally.manual > 0 ? ' fvt-pos' : ' fvt-neg'}"><span class="fvt-label">Adjustment</span><span class="fvt-val">${tally.manual > 0 ? '+' : ''}${tally.manual}</span></div>`;
-  h += '<div class="fvt-divider"></div>';
-  h += `<div class="fvt-row fvt-total"><span class="fvt-label">Bonus vitae</span><span class="fvt-val">+${tally.total_bonus}</span></div>`;
+  if (tally.ghouls)    h += `<div class="dt-vitae-row dt-vitae-cost"><span>Ghoul retainers</span><span>\u2212${tally.ghouls}</span></div>`;
+  if (tally.rite_cost) h += `<div class="dt-vitae-row dt-vitae-cost"><span>Rite costs</span><span>\u2212${tally.rite_cost}</span></div>`;
+  if (tally.manual)    h += `<div class="dt-vitae-row${tally.manual > 0 ? ' dt-vitae-pos' : ' dt-vitae-cost'}"><span>Adjustment</span><span>${tally.manual > 0 ? '+' : ''}${tally.manual}</span></div>`;
+  h += `<div class="dt-vitae-row dt-vitae-total"><span>Bonus vitae</span><span>+${tally.total_bonus}</span></div>`;
   h += '</div>';
   return h;
 }
@@ -971,17 +979,21 @@ function renderInfluenceWillpowerTally() {
   const wp  = ts ? `${ts.willpower} / ${calcWillpowerMax(currentChar)}` : 'Unavailable';
   const inf = ts ? `${ts.inf} / ${calcTotalInfluence(currentChar)}` : 'Unavailable';
 
-  let h = '<div class="fvt-card feed-tally" id="feed-tally">';
-  h += '<div class="fvt-title">Influence and Willpower</div>';
-  h += `<div class="fvt-row"><span class="fvt-label">Willpower</span><span class="fvt-val" id="feed-tally-wp">${esc(wp)}</span></div>`;
-  h += `<div class="fvt-row"><span class="fvt-label">Influence (current)</span><span class="fvt-val" id="feed-tally-inf">${esc(inf)}</span></div>`;
+  // Story 12.4: the same .dt-vitae-budget ledger as the Vitae Sources card
+  // above, so the two tally cards read as one component in two instances - the
+  // form's own treatment. `feed-tally` and the three ids are behavioural
+  // anchors (Story 12.3's tests read them) and are untouched.
+  let h = '<div class="dt-vitae-budget feed-tally" id="feed-tally">';
+  h += '<div class="dt-vitae-title">Influence and Willpower</div>';
+  h += `<div class="dt-vitae-row"><span>Willpower</span><span id="feed-tally-wp">${esc(wp)}</span></div>`;
+  h += `<div class="dt-vitae-row"><span>Influence (current)</span><span id="feed-tally-inf">${esc(inf)}</span></div>`;
   if (!ts) {
     h += '<p class="feeding-state-detail">Your tracker could not be read just now, so these figures are not shown rather than guessed at. Reload to try again.</p>';
   }
   if (declared !== null) {
     const shown = declared === 'unavailable' ? 'Unavailable' : String(declared);
-    h += '<div class="fvt-row"><span class="fvt-label">Influence declared this cycle (not yet processed)</span>';
-    h += `<span class="fvt-val" id="feed-tally-declared" data-declared="${esc(shown)}">${esc(shown)}</span></div>`;
+    h += '<div class="dt-vitae-row"><span>Influence declared this cycle (not yet processed)</span>';
+    h += `<span id="feed-tally-declared" data-declared="${esc(shown)}">${esc(shown)}</span></div>`;
     h += '<p class="feeding-state-detail">Declared spending is not taken off the current total until your Storyteller processes the downtime.</p>';
   }
   h += '</div>';
@@ -996,11 +1008,123 @@ function fvcConseqText(v) {
   return 'Fatal';
 }
 
+/**
+ * Story 12.4: the harm-tier CLASS, now split Critical/Fatal the way TM Story's
+ * own `vesselHarmTier` splits it (feeding-reference.js:336-342) instead of
+ * collapsing both onto one class.
+ *
+ * Not a rule change: `fvcConseqText` above already returned 'Critical' at 6 and
+ * 'Fatal' at 7+, and TM Story's tier ladder is itself a verbatim port OF these
+ * two functions (its own header says so). The two classes render identically
+ * (`.vd-tier.vd-critical, .vd-tier.vd-fatal` share one rule), so this changes
+ * nothing on screen - it just stops the two apps disagreeing about the name of
+ * a tier they already agree about.
+ */
 function fvcConseqClass(v) {
-  if (v <= 2) return 'fvc-safe';
-  if (v === 3) return 'fvc-drained';
-  if (v <= 5) return 'fvc-serious';
-  return 'fvc-critical';
+  if (v <= 2) return 'vd-safe';
+  if (v === 3) return 'vd-drained';
+  if (v <= 5) return 'vd-serious';
+  if (v === 6) return 'vd-critical';
+  return 'vd-fatal';
+}
+
+/**
+ * Story 12.4: which of three colours a single drawn-vitae box fills with.
+ * Ported verbatim from TM Story's `vitaeColourClass`
+ * (public/js/downtime-form/feeding-reference.js:351-355) - Angelus's own live
+ * ruling of 2026-09-02, deliberately SEPARATE from the five-tier label scale
+ * above: 1-2 Vitae green, 3-4 amber, 5+ red.
+ */
+function vitaeColourClass(v) {
+  if (v <= 2) return 'vd-c-green';
+  if (v <= 4) return 'vd-c-amber';
+  return 'vd-c-red';
+}
+
+/**
+ * Story 12.4: one vessel's drain, as the downtime form draws it - a card with a
+ * tier badge, a strip of seven boxes filled to the drawn amount, and the count.
+ * Structure and classes from TM Story's own renderVesselDrain()
+ * (public/js/downtime-form/sections/feeding.js:787-800).
+ *
+ * READ-ONLY by construction. TM Story's boxes are `<button>`s because they are
+ * its input control; here the value is already committed, so each box is a
+ * `<span>` - the story spec explicitly allows this ("a read-only rendering can
+ * use a non-interactive element styled identically"), and components.css's
+ * `.vd-box:not(button)` rules take the pointer/hover affordance back off.
+ *
+ * `label` is emitted verbatim and must be caller-controlled text, never
+ * anything from TM Story's payload.
+ */
+function renderVesselCard(label, vitae) {
+  const v = Math.max(0, Math.min(7, vitae));
+  let h = '<div class="vd-card">';
+  h += `<div class="vd-card-head"><span>${label}</span>`;
+  if (v) h += `<span class="vd-tier ${fvcConseqClass(v)}">${fvcConseqText(v)}</span>`;
+  h += '</div>';
+  h += '<div class="vd-boxes">';
+  for (let b = 1; b <= 7; b++) {
+    const filled = b <= v ? ` vd-box-filled ${vitaeColourClass(b)}` : '';
+    h += `<span class="vd-box${filled}"></span>`;
+  }
+  h += '</div>';
+  h += `<div class="vd-vitae-count">${vitae} vitae drawn</div>`;
+  h += '</div>';
+  return h;
+}
+
+/**
+ * Story 12.4: a flat `dice` array regrouped into one column per BASE die, so an
+ * exploded die's children render below it, connected by a stem.
+ *
+ * Ported verbatim from TM Story's `diceColumns`
+ * (public/js/downtime-form/dice-roll.js:67-78). Pure display grouping - it
+ * reads nothing but the dice it is handed and decides nothing about successes.
+ * The shape it produces is TM Game's own to begin with (suite.css's
+ * `.dcol`/`.xconn`, built by roll-v2.js's `mkColsEl()`); TM Story ported it
+ * from here, and the flat row this replaces was the odd one out.
+ */
+function diceColumns(dice, again) {
+  const cols = [];
+  let prevExploded = false;
+  for (const v of dice || []) {
+    const d = { v, s: v >= 8, x: v >= again };
+    if (!prevExploded) cols.push({ r: d, ch: [] });
+    else cols[cols.length - 1].ch.push(d);
+    prevExploded = d.x;
+  }
+  return cols;
+}
+
+/**
+ * Story 12.4: the dice themselves, in the downtime form's own treatment
+ * (downtime-form.css:850-860, rendered by its sections/feeding.js:619-627).
+ *
+ * `cols` is `[{ r, ch }]`, the shape both this tab's own persisted rolls and
+ * `diceColumns()` above already produce. `isHit` is passed in rather than
+ * assumed, because a chance die succeeds only on a 10 - TM Story fixed exactly
+ * that (a Codex Medium against its own dieHtml) and the flat row this replaces
+ * carried the unfixed `v >= 8` for every roll.
+ *
+ * TM Game's old `.fd-1` botch tint has no equivalent in the form and is dropped
+ * rather than smuggled through: a 1 only carries meaning on a chance die or a
+ * dramatic failure, and both already have their own explicit surfaces here
+ * (`rr.chance`'s badge, `.feeding-dramatic`). Nothing is now shown in one app
+ * and not the other.
+ */
+function renderDiceCols(cols, isHit) {
+  let h = '<div class="feeding-roll-dice">';
+  for (const col of cols) {
+    h += '<div class="feeding-dice-col">';
+    h += `<span class="feeding-die${isHit(col.r.v) ? ' feeding-die-hit' : ''}">${col.r.v}</span>`;
+    for (const d of col.ch) {
+      h += '<div class="feeding-die-conn"></div>';
+      h += `<span class="feeding-die${isHit(d.v) ? ' feeding-die-hit' : ''}">${d.v}</span>`;
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
 }
 
 /**
@@ -1086,9 +1210,30 @@ function renderStConfirmPanel({ stDefault, aggHealed = 0, formSourced = false })
         h += `<div class="feed-st-row-ctrl">\u2713 ${aggHealed} already applied this cycle</div>`;
         h += `</div>`;
       } else {
+        // Story 12.4: the plain number becomes TM Story's own aggravated-box
+        // treatment (downtime-form.css:908-914, its sections/feeding.js:901-916)
+        // - DUAL-CODED, an unhealed box red, a healed box green PLUS a tick,
+        // never colour alone. Read-only here (spans, not buttons): the figure is
+        // the player's committed declaration and this app has no write path back
+        // to tm_story, which is exactly why the ST cannot edit it.
+        //
+        // Box COUNT is the character's real current Aggravated (`ts.aggravated`,
+        // the live tracker read), first `aggHealed` of them shown healed. When
+        // the form declared more healing than the character still carries, the
+        // strip shows what is really there and the summary still names the
+        // declared figure - the confirm write's own clamp is untouched.
+        const aggTotal = ts ? ts.aggravated : 0;
+        const shownHealed = Math.min(aggHealed, aggTotal);
         h += `<div class="feed-st-row" id="feed-agg-row">`;
         h += `<div class="feed-st-row-lbl">Aggravated Healed</div>`;
         h += `<div class="feed-st-row-ctrl">`;
+        if (aggTotal > 0) {
+          h += '<div class="dt-agg-boxes">';
+          for (let i = 1; i <= aggTotal; i++) {
+            h += `<span class="dt-agg-box${i <= shownHealed ? ' dt-agg-box-healed' : ''}"></span>`;
+          }
+          h += '</div>';
+        }
         h += `<span class="feed-confirm-val" id="feed-agg-n" data-agg-healed="${aggHealed}">\u2212${aggHealed}</span>`;
         h += `</div>`;
         h += `<div class="feed-st-row-max">from the downtime form</div>`;
@@ -1111,9 +1256,13 @@ function renderStConfirmPanel({ stDefault, aggHealed = 0, formSourced = false })
  * Renders nothing the player can act on. There is deliberately no roll button,
  * no vessel <select> and no allocation confirm here: the roll and the vessel
  * allocation are both already committed, and re-asking for either is the exact
- * double-work this story exists to remove. The dice/success markup and the
- * vessel-card classes are the existing `rolled` state's own (Story 12.4
- * restyles the whole tab, so nothing new is invented here).
+ * double-work this story exists to remove.
+ *
+ * Story 12.4 recomposed the dice and vessel markup onto TM Story's own
+ * downtime-form components (.feeding-dice-col/.feeding-die, .vd-card/.vd-box),
+ * so this view now looks like the form the player rolled in. Purely visual: the
+ * precedence test, the normalisation boundary and the ST confirm write below
+ * are all untouched.
  */
 function renderFormSourcedRoll(isST) {
   // `storyFeeding` is the NORMALISED copy (normaliseStoryFeeding): dice and
@@ -1148,14 +1297,12 @@ function renderFormSourcedRoll(isST) {
   if (rr.exceptional) h += ' (exceptional)';
   h += '</div>';
 
-  h += '<div class="feeding-dice-row">';
-  for (const d of dice) {
-    let cls = 'feed-die';
-    if (d >= 8) cls += ' fd-s';
-    if (d === 1) cls += ' fd-1';
-    h += `<span class="${cls}">${d}</span>`;
-  }
-  h += '</div>';
+  // Story 12.4: the form's own column-and-stem dice, over the same flat array.
+  // `isHit` is chance-aware, matching TM Story's own dieHtml exactly - an 8 on a
+  // chance die is not a hit, and the flat row this replaces coloured it as one
+  // right beside "0 successes".
+  const isHit = v => (rr.chance ? v === 10 : v >= 8);
+  h += renderDiceCols(diceColumns(dice, rr.again), isHit);
 
   if (rr.dramatic_failure) {
     h += '<div class="feeding-dramatic">Dramatic failure \u2014 see your Storyteller at game before feeding.</div>';
@@ -1168,24 +1315,24 @@ function renderFormSourcedRoll(isST) {
     // Story's own normaliseVesselVitae, public/js/downtime-form/content-shape.js)
     // - the 0-7 harm scale fvcConseqText encodes does not apply to it, so no
     // consequence label is rendered for that shape.
+    // Story 12.4: a .vd-card in the shared grid, but deliberately with NO box
+    // strip. TM Story draws one box per point of the SHARED POOL (successes x 3,
+    // its own renderVesselDrain(), feeding.js:716) and TM Game must not
+    // reconstruct that rule - inventing a rules calculation here would be a
+    // logic change, which this story is not. The card, its head and the count
+    // are the form's; only the pool ceiling it cannot honestly know is omitted.
     h += '<div class="feeding-vessels-grid">';
-    h += '<div class="feeding-vessel-card">';
-    h += '<span class="fvc-label">Animal vitae</span>';
-    h += `<span class="fvc-val">${vesselTotal} vitae</span>`;
+    h += '<div class="vd-card">';
+    h += '<div class="vd-card-head"><span>Animal Blood Pool</span></div>';
+    h += `<div class="vd-vitae-count">${vesselTotal} vitae drawn</div>`;
     h += '</div></div>';
   } else {
     h += '<div class="feeding-vessels-grid">';
-    vessels.forEach((v, i) => {
-      h += '<div class="feeding-vessel-card">';
-      h += `<span class="fvc-label">Vessel ${i + 1}</span>`;
-      h += `<span class="fvc-val">${v} vitae</span>`;
-      h += `<span class="fvc-consequence ${fvcConseqClass(v)}">${fvcConseqText(v)}</span>`;
-      h += '</div>';
-    });
+    vessels.forEach((v, i) => { h += renderVesselCard(`Vessel ${i + 1}`, v); });
     h += '</div>';
   }
   if (vessels.length) {
-    h += `<div class="fvc-total">Total Vitae: <strong>${vesselTotal}</strong></div>`;
+    h += `<div class="vd-summary">Total Vitae: <strong>${vesselTotal}</strong></div>`;
     h += '<div class="fvc-alloc-badge">\u2713 Allocation recorded in the downtime form</div>';
   }
   h += '</div>';
@@ -1328,16 +1475,11 @@ function render() {
       h += `<span class="feeding-pool-breakdown">${esc(successBreakdown)}</span>`;
     }
 
-    h += '<div class="feeding-dice-row">';
-    for (const col of cols) {
-      for (const d of [col.r, ...col.ch]) {
-        let cls = 'feed-die';
-        if (d.s) cls += ' fd-s';
-        if (d.v === 1) cls += ' fd-1';
-        h += `<span class="${cls}">${d.v}</span>`;
-      }
-    }
-    h += '</div>';
+    // Story 12.4: same treatment as the form-sourced state above. This roll's
+    // `cols` are ALREADY column-shaped ({ r, ch }), so no regrouping is needed -
+    // the old flat loop was throwing that structure away. No chance-die concept
+    // exists on this path, so the hit test is the plain one.
+    h += renderDiceCols(cols, v => v >= 8);
 
     // ── Vitae breakdown card ──
     h += renderVitaeTallyCard(vitateTally, vessels);
@@ -1349,15 +1491,34 @@ function render() {
     } else {
       const bonusVitae = vitateTally?.total_bonus ?? 0;
       const allocated = vitaeAllocation && vitaeAllocation.length === vessels;
+      // \u2500\u2500 Story 12.4, AC 2: THE INTERACTION-VS-STYLE DECISION \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      // DECIDED: port the STYLE, keep the control type. The already-allocated
+      // (read-only) half becomes TM Story's real box strip, because a read-out
+      // has no interaction to preserve; the still-editable half keeps TM Game's
+      // own <select>, recomposed onto the same .vd-card chrome.
+      //
+      // Why, having read TM Story's own vessel-drain JS rather than guessing
+      // from its CSS (public/js/downtime-form/sections/feeding.js:793-834): its
+      // .vd-box IS genuinely click-driven, and with semantics a <select> does
+      // not have - seven buttons per vessel, clicking box N sets the draw to N,
+      // clicking the box that is already the top of the fill sets it to N-1.
+      // Porting that interaction is NOT cheap here, because TM Game's editable
+      // path carries a gate TM Story's has no equivalent of: `allFilled` in
+      // updateVesselUI() below only enables #fvc-confirm once EVERY vessel has a
+      // value, and `doConfirmAllocation` refuses a NaN. A box strip has no
+      // "unset" state distinguishable from "set to 0" - TM Story never needs
+      // one, having no confirm gate at all - so porting the interaction would
+      // mean inventing that distinction, i.e. changing what the control does.
+      // That is precisely what [[feedback_port-faithfully-not-redesign]]
+      // ("colour/type/spacing/component only, never layout or control choice")
+      // and this story's own "err toward the narrower reading" rule out.
       h += `<div class="feeding-vessels-grid" id="feeding-vessels-grid">`;
       for (let i = 0; i < vessels; i++) {
-        h += `<div class="feeding-vessel-card" data-vessel-idx="${i}">`;
-        h += `<span class="fvc-label">Vessel ${i + 1}</span>`;
         if (allocated) {
-          const sv = vitaeAllocation[i];
-          h += `<span class="fvc-val">${sv} vitae</span>`;
-          h += `<span class="fvc-consequence ${fvcConseqClass(sv)}">${fvcConseqText(sv)}</span>`;
+          h += renderVesselCard(`Vessel ${i + 1}`, vitaeAllocation[i]);
         } else {
+          h += `<div class="vd-card" data-vessel-idx="${i}">`;
+          h += `<div class="vd-card-head"><span>Vessel ${i + 1}</span><span class="vd-tier" id="fvc-con-${i}"></span></div>`;
           h += `<select class="fvc-select" id="fvc-sel-${i}" data-vessel-idx="${i}">`;
           h += '<option value="">\u2014</option>';
           h += '<option value="1">1 vitae \u2014 Safe</option>';
@@ -1368,25 +1529,25 @@ function render() {
           h += '<option value="6">6 vitae \u2014 Critical (near death)</option>';
           h += '<option value="7">7 vitae \u2014 Fatal</option>';
           h += '</select>';
-          h += `<span class="fvc-consequence" id="fvc-con-${i}"></span>`;
+          h += `<div class="vd-vitae-count" id="fvc-count-${i}">Not yet allocated</div>`;
+          h += '</div>';
         }
-        h += '</div>';
       }
       h += '</div>';
       if (allocated) {
         const vesselTotal = vitaeAllocation.reduce((a, b) => a + b, 0);
         const grandTotal  = vesselTotal + (vitateTally?.total_bonus ?? 0);
         if (vitateTally?.total_bonus) {
-          h += `<div class="fvc-total">Vessel vitae: <strong>${vesselTotal}</strong> + Bonus: <strong>+${vitateTally.total_bonus}</strong> = <strong>${grandTotal}</strong> total</div>`;
+          h += `<div class="vd-summary">Vessel vitae: <strong>${vesselTotal}</strong> + Bonus: <strong>+${vitateTally.total_bonus}</strong> = <strong>${grandTotal}</strong> total</div>`;
         } else {
-          h += `<div class="fvc-total">Total Vitae: <strong>${vesselTotal}</strong></div>`;
+          h += `<div class="vd-summary">Total Vitae: <strong>${vesselTotal}</strong></div>`;
         }
         h += '<div class="fvc-alloc-badge">\u2713 Allocation recorded</div>';
       } else {
         if (bonusVitae) {
-          h += `<div class="fvc-total">Vessel vitae: <span id="fvc-total-val">0</span> + Bonus: <strong>+${bonusVitae}</strong> = <span id="fvc-grand-val">${bonusVitae}</span> total</div>`;
+          h += `<div class="vd-summary">Vessel vitae: <span id="fvc-total-val">0</span> + Bonus: <strong>+${bonusVitae}</strong> = <span id="fvc-grand-val">${bonusVitae}</span> total</div>`;
         } else {
-          h += `<div class="fvc-total">Total Vitae: <span id="fvc-total-val">0</span></div>`;
+          h += `<div class="vd-summary">Total Vitae: <span id="fvc-total-val">0</span></div>`;
         }
         h += `<p class="feeding-overfeed-warn">Draining beyond safe vitae (${safeVitae}) risks a Humanity check.</p>`;
         h += '<button id="fvc-confirm" class="qf-btn qf-btn-submit" disabled>Confirm Allocation</button>';
@@ -1673,14 +1834,21 @@ function updateVesselUI() {
   let total = 0, allFilled = true;
   sels.forEach(sel => {
     const idx = sel.dataset.vesselIdx;
+    // Story 12.4: the live consequence badge is now the card head's own
+    // .vd-tier, and the card carries a .vd-vitae-count line the way the form's
+    // read-only cards do. Same two states as before (a value, or nothing chosen
+    // yet) and the same `allFilled` gate - only the elements changed.
     const conEl = container.querySelector(`#fvc-con-${idx}`);
+    const cntEl = container.querySelector(`#fvc-count-${idx}`);
     if (sel.value) {
       const v = parseInt(sel.value, 10);
       total += v;
-      if (conEl) { conEl.textContent = fvcConseqText(v); conEl.className = `fvc-consequence ${fvcConseqClass(v)}`; }
+      if (conEl) { conEl.textContent = fvcConseqText(v); conEl.className = `vd-tier ${fvcConseqClass(v)}`; }
+      if (cntEl) cntEl.textContent = `${v} vitae drawn`;
     } else {
       allFilled = false;
-      if (conEl) { conEl.textContent = ''; conEl.className = 'fvc-consequence'; }
+      if (conEl) { conEl.textContent = ''; conEl.className = 'vd-tier'; }
+      if (cntEl) cntEl.textContent = 'Not yet allocated';
     }
   });
   const totalEl = container.querySelector('#fvc-total-val');

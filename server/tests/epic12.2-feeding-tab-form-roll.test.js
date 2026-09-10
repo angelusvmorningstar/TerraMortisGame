@@ -366,11 +366,21 @@ describe('AC 2: the form-sourced state is read-only', () => {
     expect(html).toContain('7 dice');
     expect(html).toContain('<div class="feeding-suc">3</div>');
     expect(html).toContain('successes');
-    // Successes (>= 8) carry the existing success class, a 1 the existing 1 class.
-    expect(html).toContain('<span class="feed-die fd-s">8</span>');
-    expect(html).toContain('<span class="feed-die fd-s">10</span>');
-    expect(html).toContain('<span class="feed-die fd-1">1</span>');
-    expect(html).toContain('<span class="feed-die">3</span>');
+    // Story 12.4 recomposed these onto the downtime form's own dice classes
+    // (.feeding-die/.feeding-die-hit). Same intent as before: successes (>= 8)
+    // are marked as hits, every other die - including the 1 - renders plain.
+    // `.fd-1`'s botch tint has no counterpart in the form and was dropped, so
+    // the 1 is now asserted as a rendered plain die rather than by that class.
+    expect(html).toContain('<span class="feeding-die feeding-die-hit">8</span>');
+    expect(html).toContain('<span class="feeding-die feeding-die-hit">10</span>');
+    expect(html).toContain('<span class="feeding-die">1</span>');
+    expect(html).toContain('<span class="feeding-die">3</span>');
+    // ...and the flat row became one column per BASE die: the 10 exploded, so
+    // its child (2) hangs below it in the same column, joined by a stem.
+    expect(html).toContain(
+      '<div class="feeding-dice-col"><span class="feeding-die feeding-die-hit">10</span>'
+      + '<div class="feeding-die-conn"></div><span class="feeding-die">2</span></div>',
+    );
   });
 
   it('flags an exceptional success', async () => {
@@ -392,10 +402,19 @@ describe('AC 2: the form-sourced state is read-only', () => {
     scenario.story = storyFeedingBody({ vesselVitae: [2, 4, 7] });
     const html = await renderTab(newChar());
 
-    expect(html).toContain('<span class="fvc-consequence fvc-safe">Safe</span>');
-    expect(html).toContain('<span class="fvc-consequence fvc-serious">Serious injury</span>');
-    expect(html).toContain('<span class="fvc-consequence fvc-critical">Fatal</span>');
+    // Story 12.4: the harm tier is now the form's own .vd-tier badge, and the
+    // Critical/Fatal collapse was split to match TM Story's ladder exactly (7
+    // vitae is `vd-fatal`, not `fvc-critical`). Same five labels, same
+    // boundaries - `fvcConseqText` is untouched.
+    expect(html).toContain('<span class="vd-tier vd-safe">Safe</span>');
+    expect(html).toContain('<span class="vd-tier vd-serious">Serious injury</span>');
+    expect(html).toContain('<span class="vd-tier vd-fatal">Fatal</span>');
     expect(html).toContain('Total Vitae: <strong>13</strong>');
+
+    // The drawn amount is now a box strip, filled to the value, three-band
+    // coloured (1-2 green, 3-4 amber, 5+ red) exactly as the form draws it.
+    expect(html).toContain('<div class="vd-vitae-count">4 vitae drawn</div>');
+    expect(html).toContain('<span class="vd-box vd-box-filled vd-c-red"></span>');
 
     // No editable allocation anywhere: no selector, no per-vessel index, no
     // "Confirm Allocation" button.
@@ -403,14 +422,22 @@ describe('AC 2: the form-sourced state is read-only', () => {
     expect(html).not.toContain('data-vessel-idx');
     expect(html).not.toContain('fvc-confirm');
     expect(pane.querySelectorAll('.fvc-select')).toHaveLength(0);
+    // Story 12.4, AC 2: the ported boxes are TM Story's INPUT control there and
+    // a pure read-out here, so they must be non-interactive spans. Nothing on
+    // this whole surface may be a button for a player.
+    expect(html).not.toContain('<button');
   });
 
   it('does not label an Animal pool with the per-vessel harm scale', async () => {
     scenario.story = storyFeedingBody({ vesselVitae: [12], bloodType: 'Animal' });
     const html = await renderTab(newChar());
-    expect(html).toContain('Animal vitae');
-    expect(html).toContain('12 vitae');
-    expect(html).not.toContain('fvc-consequence');
+    expect(html).toContain('Animal Blood Pool');
+    expect(html).toContain('12 vitae drawn');
+    expect(html).not.toContain('vd-tier');
+    // Story 12.4: and no box strip either. TM Story draws one box per point of
+    // the shared pool, whose ceiling is successes x 3 - its own rule, which TM
+    // Game must not reconstruct just to fill a card in.
+    expect(html).not.toContain('vd-boxes');
   });
 
   it('NEVER renders or wires a roll button (the "never re-ask" requirement)', async () => {
@@ -656,8 +683,8 @@ describe('review High: TM Story\'s payload is normalised at the boundary', () =>
     const html = await renderTab(newChar());
 
     expect(html).toContain('Rolled in your downtime form');
-    expect(html).toContain('<span class="feed-die fd-s">8</span>');
-    expect(html).toContain('<span class="feed-die">3</span>');
+    expect(html).toContain('<span class="feeding-die feeding-die-hit">8</span>');
+    expect(html).toContain('<span class="feeding-die">3</span>');
     // Nothing of the payload survived, escaped or otherwise.
     expect(html).not.toContain('<img');
     expect(html).not.toContain('onerror');
@@ -668,8 +695,8 @@ describe('review High: TM Story\'s payload is normalised at the boundary', () =>
     scenario.story = storyFeedingBody({ vesselVitae: [2, XSS, 4] });
     const html = await renderTab(newChar());
 
-    expect(html).toContain('<span class="fvc-val">2 vitae</span>');
-    expect(html).toContain('<span class="fvc-val">4 vitae</span>');
+    expect(html).toContain('<div class="vd-vitae-count">2 vitae drawn</div>');
+    expect(html).toContain('<div class="vd-vitae-count">4 vitae drawn</div>');
     expect(html).toContain('Total Vitae: <strong>6</strong>');
     expect(html).not.toContain('<img');
     expect(html).not.toContain('onerror');
@@ -911,10 +938,15 @@ describe('review Medium: Number() is never asked to type-check a JSON value', ()
     expect(html).toContain('Rolled in your downtime form');
     // Exactly the two real dice, and nothing coerced beside them: `Number(true)`
     // is 1 and `Number([8])` is 8, so the unguarded version rendered five.
-    expect(html.match(/class="feed-die/g) || []).toHaveLength(2);
-    expect(html).toContain('<span class="feed-die fd-s">8</span>');
-    expect(html).toContain('<span class="feed-die">3</span>');
-    expect(html).not.toContain('fd-1');                 // the 1 a boolean used to become
+    // The trailing [" ] excludes `.feeding-die-conn`, the stem element Story
+    // 12.4's columns add between an exploded die and its child.
+    expect(html.match(/class="feeding-die[" ]/g) || []).toHaveLength(2);
+    expect(html).toContain('<span class="feeding-die feeding-die-hit">8</span>');
+    expect(html).toContain('<span class="feeding-die">3</span>');
+    // Was `not.toContain('fd-1')` - the 1 a boolean used to become. Story 12.4
+    // dropped that class with the rest of the old dice skin, so the same intent
+    // is now asserted directly: no die showing a 1 was rendered at all.
+    expect(html).not.toContain('>1</span>');
   });
 
   it('rejects a boolean, a nested array and an object among the vessel vitae', async () => {
@@ -923,7 +955,7 @@ describe('review Medium: Number() is never asked to type-check a JSON value', ()
 
     // 2 + 1 only. Unguarded, `true` became a 1-vitae vessel and `[3]` a 3-vitae
     // one, for a fabricated total of 7 across four cards.
-    expect(html.match(/class="feeding-vessel-card"/g) || []).toHaveLength(2);
+    expect(html.match(/class="vd-card"/g) || []).toHaveLength(2);
     expect(html).toContain('Total Vitae: <strong>3</strong>');
     expect(html).not.toContain('Vessel 3');
   });
@@ -947,7 +979,7 @@ describe('review Medium: Number() is never asked to type-check a JSON value', ()
     scenario.story.feeding.rollResult.pool = '2';
     const html = await renderTab(newChar());
 
-    expect(html.match(/class="feed-die/g) || []).toHaveLength(2);
+    expect(html.match(/class="feeding-die[" ]/g) || []).toHaveLength(2);
     expect(html).toContain('<span class="feeding-pool-total">2 dice</span>');
     expect(html).toContain('Total Vitae: <strong>3</strong>');
   });
