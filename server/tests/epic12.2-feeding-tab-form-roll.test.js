@@ -185,6 +185,13 @@ globalThis.fetch = async (url, opts = {}) => {
   if (u.includes('/api/tracker_state/')) {
     if (method === 'PUT') {
       scenario.puts.push(JSON.parse(opts.body));
+      // `holdPut` keeps the write genuinely in flight so a test can navigate
+      // away before it settles (external review, third round, Medium: the
+      // confirm handler's async race). The body is recorded first, so the
+      // "was it sent, and with what" assertions do not depend on the release.
+      if (scenario.holdPut) {
+        return new Promise(resolve => { scenario.releasePut = () => resolve(jsonRes({ ok: true })); });
+      }
       return jsonRes({ ok: true });
     }
     // `scenario.tracker`: a document (200), null (404 - no tracker document
@@ -259,6 +266,7 @@ beforeEach(() => {
   scenario = {
     story: storyFeedingBody(), subs: [], tracker: null, cycle: CYCLE,
     puts: [], calls: [], storyCalls: [],
+    holdPut: false, releasePut: null,
   };
 });
 
@@ -787,6 +795,161 @@ describe('review Medium: a confirm write cannot be started twice', () => {
 
     expect(scenario.puts).toHaveLength(1);
     expect(scenario.puts[0].aggravated).toBe(1);
+  });
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  External review, third round (Codex, 2026-09-10)
+// ═════════════════════════════════════════════════════════════════════════════
+
+describe('review Medium: an in-flight confirm cannot land on a view it was not about', () => {
+  it('does not apply a stale confirm response to the character now on screen', async () => {
+    setST(true);
+    const charA = newChar();
+    const charB = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 2 });
+    scenario.tracker = { character_id: charA._id, aggravated: 3, influence: 4 };
+
+    await renderTab(charA);
+    const paneA = pane;
+    expect(paneA._html).toContain('data-agg-healed="2"');
+
+    // The write starts and stays in flight.
+    scenario.holdPut = true;
+    const inFlight = paneA.click('#feed-confirm-btn');   // deliberately not awaited
+
+    // ...and the ST switches to a different character before it settles.
+    scenario.tracker = { character_id: charB._id, aggravated: 5, influence: 1 };
+    const htmlB = await renderTab(charB);
+    const paneB = pane;
+    expect(htmlB).toContain('data-agg-healed="2"');           // B's own healing, unapplied
+    expect(htmlB).not.toContain('already applied this cycle');
+
+    scenario.releasePut();
+    await inFlight;
+
+    // B's view is exactly as B rendered it. Before this fix, A's response was
+    // merged into the now-current `trackerDoc` and re-rendered here, so B
+    // showed A's aggravated marker as "already applied this cycle" and A's
+    // Influence figure.
+    expect(paneB._html).toBe(htmlB);
+    expect(paneB._html).not.toContain('already applied this cycle');
+    expect(paneB._html).not.toContain('Feed confirmed');
+
+    // A's write is not lost: it went once, computed from A's own live document.
+    expect(scenario.puts).toHaveLength(1);
+    expect(scenario.puts[0].aggravated).toBe(1);              // A's 3 - 2, never B's 5
+    expect(scenario.puts[0][AGG_HEALED_MARKER]).toBe(CYCLE_ID);
+
+    // ...and A's own confirmation record really was stored, under A's key.
+    scenario.holdPut = false;
+    scenario.tracker = { character_id: charA._id, aggravated: 1, influence: 4, [AGG_HEALED_MARKER]: CYCLE_ID };
+    const htmlA2 = await renderTab(charA);
+    expect(htmlA2).toContain('Feed confirmed');
+    expect(htmlA2).toContain('Agg −2');
+
+    // B, meanwhile, still has its own healing to confirm.
+    scenario.tracker = { character_id: charB._id, aggravated: 5, influence: 1 };
+    const htmlB2 = await renderTab(charB);
+    expect(htmlB2).toContain('data-agg-healed="2"');
+    await pane.click('#feed-confirm-btn');
+    expect(scenario.puts).toHaveLength(2);
+    expect(scenario.puts[1].aggravated).toBe(3);              // B's own 5 - 2
+  });
+
+  it('files a confirmation begun in one cycle under THAT cycle, not the one that opened mid-write', async () => {
+    setST(true);
+    const char = newChar();
+    scenario.story = storyFeedingBody({ aggHealed: 2 });
+    scenario.tracker = { character_id: char._id, aggravated: 3, influence: 0 };
+
+    await renderTab(char);
+    const pane1 = pane;
+    scenario.holdPut = true;
+    const inFlight = pane1.click('#feed-confirm-btn');
+
+    // The ST opens the next game's cycle while the write is in flight.
+    scenario.cycle = CYCLE2;
+    const html2 = await renderTab(char);
+    const pane2 = pane;
+    expect(html2).toContain('id="feed-confirm-btn"');
+
+    scenario.releasePut();
+    await inFlight;
+    scenario.holdPut = false;
+
+    // Cycle 2's own confirm controls survive: the cycle-1 record was keyed to
+    // cycle 1, not to whatever was active when the response landed.
+    expect(pane2._html).toBe(html2);
+    expect(pane2._html).not.toContain('Feed confirmed');
+    expect(pane2._html).toContain('id="feed-confirm-btn"');
+    expect(scenario.puts).toHaveLength(1);
+    expect(scenario.puts[0][AGG_HEALED_MARKER]).toBe(CYCLE_ID);
+
+    // Back in cycle 1, the confirmation is remembered.
+    scenario.cycle = CYCLE;
+    scenario.tracker = { character_id: char._id, aggravated: 1, influence: 0, [AGG_HEALED_MARKER]: CYCLE_ID };
+    expect(await renderTab(char)).toContain('Feed confirmed');
+
+    // ...and cycle 2's own healing is still separately confirmable.
+    scenario.cycle = CYCLE2;
+    scenario.tracker = { character_id: char._id, aggravated: 1, influence: 0, [AGG_HEALED_MARKER]: CYCLE_ID };
+    const html2b = await renderTab(char);
+    expect(html2b).toContain('data-agg-healed="2"');
+    await pane.click('#feed-confirm-btn');
+    expect(scenario.puts).toHaveLength(2);
+    expect(scenario.puts[1][AGG_HEALED_MARKER]).toBe(CYCLE2_ID);
+  });
+});
+
+describe('review Medium: Number() is never asked to type-check a JSON value', () => {
+  it('rejects a boolean, a nested array and an object among the dice', async () => {
+    scenario.story = storyFeedingBody();
+    scenario.story.feeding.rollResult.dice = [8, true, [8], { valueOf: () => 8 }, 3];
+    const html = await renderTab(newChar());
+
+    expect(html).toContain('Rolled in your downtime form');
+    // Exactly the two real dice, and nothing coerced beside them: `Number(true)`
+    // is 1 and `Number([8])` is 8, so the unguarded version rendered five.
+    expect(html.match(/class="feed-die/g) || []).toHaveLength(2);
+    expect(html).toContain('<span class="feed-die fd-s">8</span>');
+    expect(html).toContain('<span class="feed-die">3</span>');
+    expect(html).not.toContain('fd-1');                 // the 1 a boolean used to become
+  });
+
+  it('rejects a boolean, a nested array and an object among the vessel vitae', async () => {
+    scenario.story = storyFeedingBody({ vesselVitae: [2, true, [3], { a: 1 }, 1] });
+    const html = await renderTab(newChar());
+
+    // 2 + 1 only. Unguarded, `true` became a 1-vitae vessel and `[3]` a 3-vitae
+    // one, for a fabricated total of 7 across four cards.
+    expect(html.match(/class="feeding-vessel-card"/g) || []).toHaveLength(2);
+    expect(html).toContain('Total Vitae: <strong>3</strong>');
+    expect(html).not.toContain('Vessel 3');
+  });
+
+  it.each([
+    ['a boolean', true],
+    ['a nested array', [7]],
+    ['an object', { valueOf: () => 7 }],
+  ])('does not report a pool size from %s', async (_label, pool) => {
+    scenario.story = storyFeedingBody();
+    scenario.story.feeding.rollResult.pool = pool;
+    const html = await renderTab(newChar());
+
+    expect(html).toContain('Rolled in your downtime form');
+    expect(html).not.toContain('feeding-pool-total');   // no fabricated "1 dice"/"7 dice"
+  });
+
+  it('still accepts genuine numbers and clean numeric strings', async () => {
+    scenario.story = storyFeedingBody({ vesselVitae: ['2', 1] });
+    scenario.story.feeding.rollResult.dice = ['8', 3];
+    scenario.story.feeding.rollResult.pool = '2';
+    const html = await renderTab(newChar());
+
+    expect(html.match(/class="feed-die/g) || []).toHaveLength(2);
+    expect(html).toContain('<span class="feeding-pool-total">2 dice</span>');
+    expect(html).toContain('Total Vitae: <strong>3</strong>');
   });
 });
 

@@ -478,6 +478,36 @@ describe('review High: the figures are the live document, never a seeded default
   });
 });
 
+describe('review Medium (third round): a tracker figure is never coerced from a non-number', () => {
+  it.each([
+    ['booleans', true, false],
+    ['arrays', [1], [2]],
+    ['objects', { valueOf: () => 1 }, { valueOf: () => 2 }],
+  ])('falls back to the real maximum when the document carries %s', async (_label, wp, inf) => {
+    const char = newChar();
+    suiteState.chars = [char];
+    scenario.tracker = { character_id: String(char._id), willpower: wp, influence: inf };
+    scenario.story = storyBody();
+
+    await renderTab(char);
+    // `Number(true)` is 1 and `Number([2])` is 2, so the unguarded coercion read
+    // these as real, and very low, tracker figures.
+    expect(pane.querySelector('#feed-tally-wp').textContent).toBe('5 / 5');
+    expect(pane.querySelector('#feed-tally-inf').textContent).toBe('5 / 5');
+  });
+
+  it('still reads a clean numeric string as the number it is', async () => {
+    const char = newChar();
+    suiteState.chars = [char];
+    scenario.tracker = { character_id: String(char._id), willpower: '2', influence: '3' };
+    scenario.story = storyBody();
+
+    await renderTab(char);
+    expect(pane.querySelector('#feed-tally-wp').textContent).toBe('2 / 5');
+    expect(pane.querySelector('#feed-tally-inf').textContent).toBe('3 / 5');
+  });
+});
+
 describe('review Low: a non-empty but unreadable spends array is not a zero', () => {
   it('shows Unavailable, not 0, when no entry carries a readable amount', async () => {
     const char = newChar();

@@ -115,8 +115,11 @@ export const AGG_HEALED_MARKER = 'feeding_agg_healed_cycle_id';
 // reload, silently skipping the new cycle's own aggHealed.
 const _stConfirmed = {};
 
-function stConfirmKey(charId) {
-  return String(charId) + '|' + (activeCycleId || '');
+// `cycleId` is explicit so an in-flight write can key its own result against
+// the cycle it STARTED in (review fix, Codex, external, third round, Medium),
+// rather than whatever cycle happens to be active when the response lands.
+function stConfirmKey(charId, cycleId = activeCycleId) {
+  return String(charId) + '|' + (cycleId || '');
 }
 
 // Resolve a feeding_territories grid key (slug OR ObjectId hex string) to a
@@ -478,7 +481,10 @@ function trackerFigures() {
     };
   }
   if (trackerLoad !== 'ok' || !trackerDoc) return null;
-  const num = (v, fallback) => (Number.isFinite(Number(v)) ? Number(v) : fallback);
+  // Same strict gate as the TM Story boundary below (`_strictNum`): a stored
+  // `willpower: true` must fall back to the real maximum, not silently read as
+  // Willpower 1.
+  const num = (v, fallback) => { const n = _strictNum(v); return n === null ? fallback : n; };
   return {
     willpower: num(trackerDoc.willpower, calcWillpowerMax(currentChar)),
     inf: num(trackerDoc.influence, calcTotalInfluence(currentChar)),
@@ -496,18 +502,42 @@ function trackerFigures() {
 // Nothing from that payload now reaches the DOM except numbers this file
 // produced itself, and the two strings it keeps go through `esc()` as before.
 
+/**
+ * A finite number, but ONLY from a value that is genuinely numeric to begin
+ * with: a JSON number, or a non-blank string that parses cleanly. Anything else
+ * - a boolean, an array, an object, `null`, `undefined`, a blank string - is
+ * `null`, meaning "not a number at all".
+ *
+ * Review fix (Codex, external, third round, Medium): `Number()` alone is not a
+ * type check. `Number(true)` is 1, `Number([8])` is 8 and `Number([])` is 0, so
+ * a payload such as `dice: [true, [8]]` or `vesselVitae: [true, 2]` coerced to
+ * `[1, 8]` / `[1, 2]` and rendered as though those were real values - which
+ * weakens the very boundary validation the previous round added. The typeof
+ * gate goes BEFORE the coercion, not after it. `_spendAmount` below already
+ * worked this way for exactly the same reason; this is that discipline applied
+ * to every other coercion in the file.
+ */
+function _strictNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
 /** A die: an integer 1-10. Anything else is not a die. */
 function _die(v) {
-  const n = Number(v);
-  return (Number.isInteger(n) && n >= 1 && n <= 10) ? n : null;
+  const n = _strictNum(v);
+  return (n !== null && Number.isInteger(n) && n >= 1 && n <= 10) ? n : null;
 }
 
 /** A vessel's vitae: a finite integer, floored at 0 and bounded well above any
  *  real value (a Human vessel tops out at 7; an Animal feed records one pooled
  *  total, which is larger but still small). */
 function _vesselVitae(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n)) return null;
+  const n = _strictNum(v);
+  if (n === null) return null;
   const i = Math.trunc(n);
   return (i >= 0 && i <= 99) ? i : null;
 }
@@ -538,8 +568,8 @@ export function isUsableStoryRoll(f) {
  */
 export function normaliseStoryFeeding(f) {
   const rr = f.rollResult;
-  const again = Number(rr.again);
-  const pool = Number(rr.pool);
+  const again = _strictNum(rr.again);
+  const pool = _strictNum(rr.pool);
   return {
     method: typeof f.method === 'string' ? f.method : '',
     bloodType: typeof f.bloodType === 'string' ? f.bloodType : '',
@@ -547,7 +577,7 @@ export function normaliseStoryFeeding(f) {
     vesselVitae: (Array.isArray(f.vesselVitae) ? f.vesselVitae : [])
       .map(_vesselVitae).filter(v => v !== null),
     rollResult: {
-      pool: Number.isInteger(pool) && pool >= 0 ? pool : null,
+      pool: (pool !== null && Number.isInteger(pool) && pool >= 0) ? pool : null,
       dice: rr.dice.map(_die).filter(d => d !== null),
       successes: rr.successes,
       exceptional: rr.exceptional === true,
@@ -904,12 +934,8 @@ export function declaredInfluenceSpend(ti) {
  * used to pass for a real declaration of zero.
  */
 function _spendAmount(v) {
-  if (typeof v === 'number') return Number.isFinite(v) ? Math.trunc(v) : null;
-  if (typeof v === 'string' && v.trim() !== '') {
-    const n = Number(v);
-    return Number.isFinite(n) ? Math.trunc(n) : null;
-  }
-  return null;
+  const n = _strictNum(v);
+  return n === null ? null : Math.trunc(n);
 }
 
 /**
@@ -1521,15 +1547,30 @@ function wireEvents() {
     const ts = trackerFigures();
     if (!ts) return;
     _confirmInFlight = true;
-    const charId = String(currentChar._id);
-    const n = parseInt(container.querySelector('#feed-confirm-n')?.textContent) || 0;
+    // Review fix (Codex, external, third round, Medium): everything this write
+    // belongs to is SNAPSHOTTED before the await. The ST can switch character,
+    // or the active cycle can change, while the PUT is in flight; when the
+    // response then landed, the handler merged character A's body into the
+    // now-current `trackerDoc` and re-rendered the now-current container, so
+    // character B displayed A's Influence and A's aggravated marker - and the
+    // confirmation record was filed under whatever cycle was active by then,
+    // hiding the new cycle's own confirm controls. The write itself is still a
+    // success in that case (it reached the server for the right character); it
+    // simply must not be applied to a view it was never about.
+    const charSnapshot  = currentChar;
+    const paneSnapshot  = container;
+    const cycleSnapshot = activeCycleId;
+    const isStillCurrent = () =>
+      currentChar === charSnapshot && container === paneSnapshot && activeCycleId === cycleSnapshot;
+    const charId = String(charSnapshot._id);
+    const n = parseInt(paneSnapshot.querySelector('#feed-confirm-n')?.textContent) || 0;
 
-    const btn = container.querySelector('#feed-confirm-btn');
+    const btn = paneSnapshot.querySelector('#feed-confirm-btn');
     if (btn) { btn.textContent = 'Saving\u2026'; btn.disabled = true; }
 
-    const infEl = container.querySelector('#feed-inf-spent');
-    const vitaeMax = calcVitaeMax(currentChar);
-    const infMax   = calcTotalInfluence(currentChar);
+    const infEl = paneSnapshot.querySelector('#feed-inf-spent');
+    const vitaeMax = calcVitaeMax(charSnapshot);
+    const infMax   = calcTotalInfluence(charSnapshot);
     // Stepper value is the NEW remaining influence (starts at max, ticked down)
     const infAfter = infEl ? Math.max(0, parseInt(infEl.textContent) || 0) : infMax;
     const infSpent = infMax - infAfter;
@@ -1540,11 +1581,11 @@ function wireEvents() {
     // reading the amount off the DOM is also the idempotency guard: an
     // already-applied cycle, and every TM-Game-sourced roll, has no element to
     // read and takes the untouched vitae+influence path below.
-    const aggEl = container.querySelector('#feed-agg-n');
+    const aggEl = paneSnapshot.querySelector('#feed-agg-n');
     const aggHealed = aggEl ? Math.max(0, parseInt(aggEl.dataset.aggHealed, 10) || 0) : 0;
     const body = { vitae: n, influence: infAfter };
     let newAgg = null;
-    if (aggHealed > 0 && activeCycleId && ts.marker !== activeCycleId) {
+    if (aggHealed > 0 && cycleSnapshot && ts.marker !== cycleSnapshot) {
       // Review fix (Codex, external, 12.2 High): the LIVE tracker document,
       // never tracker.js's cache. That cache seeds `aggravated: 0` for any
       // character nothing has loaded, and this tab has never loaded one - so a
@@ -1553,18 +1594,28 @@ function wireEvents() {
       // only when the live read genuinely succeeded or genuinely 404'd.
       newAgg = Math.max(0, ts.aggravated - aggHealed);
       body.aggravated = newAgg;
-      body[AGG_HEALED_MARKER] = activeCycleId;
+      body[AGG_HEALED_MARKER] = cycleSnapshot;
     }
 
     // Write vitae and influence to API — single source of truth for tracker state
     try {
       await apiPut('/api/tracker_state/' + charId, body);
-      // Bring this tab's own live copy up to what was just written - including
-      // the marker, so the re-render below shows "already applied" rather than
-      // re-offering the healing, and including the promotion from 'absent' to
-      // 'ok' (a character with no tracker document now has one).
-      trackerDoc = { ...(trackerDoc || {}), ...body };
-      trackerLoad = 'ok';
+      const stillCurrent = isStillCurrent();
+      // `trackerDoc`/`trackerLoad`/`render()` are all GLOBAL VIEW state: they
+      // describe whatever the tab is showing right now. Touch them only when
+      // that is still this write's own character and cycle. Everything below
+      // this branch is keyed by character id (or by the snapshotted cycle) and
+      // is therefore correct either way - which is what stops the response
+      // being lost when the ST has navigated on.
+      if (stillCurrent) {
+        // Bring this tab's own live copy up to what was just written -
+        // including the marker, so the re-render below shows "already applied"
+        // rather than re-offering the healing, and including the promotion
+        // from 'absent' to 'ok' (a character with no tracker document now has
+        // one).
+        trackerDoc = { ...(trackerDoc || {}), ...body };
+        trackerLoad = 'ok';
+      }
       // Keep tracker.js in-memory cache in sync so the tracker card re-renders correctly
       const _raw = trackerReadRaw(charId);
       if (_raw) {
@@ -1580,11 +1631,15 @@ function wireEvents() {
       } catch { /* ignore */ }
       const record = { vitae: n, vitaeMax, infSpent, infAfter, infMax };
       if (aggHealed > 0) record.aggHealed = aggHealed;
-      _stConfirmed[stConfirmKey(charId)] = record;
-      render();
+      // The SNAPSHOTTED cycle, explicitly: a confirmation begun in cycle 1 is a
+      // record about cycle 1 even if cycle 2 opened while it was in flight.
+      // Filed under the live `activeCycleId` it hid cycle 2's own confirm
+      // controls and skipped that cycle's aggHealed.
+      _stConfirmed[stConfirmKey(charId, cycleSnapshot)] = record;
+      if (stillCurrent) render();
     } catch (err) {
       console.error('Tracker feed confirm failed:', err);
-      if (btn) {
+      if (btn && isStillCurrent()) {
         btn.textContent = 'Save failed \u2014 retry';
         btn.classList.add('is-error');
         btn.disabled = false;
@@ -1728,7 +1783,9 @@ async function loadInfluenceSpend(charId) {
       .sort((a, b) => (String(b._id) > String(a._id) ? 1 : -1))[0];
     if (!latest) { el.textContent = '0'; return; }
     const spendObj = JSON.parse(latest.responses.influence_spend || '{}');
-    const total = Object.values(spendObj).reduce((sum, v) => sum + Math.abs(Number(v) || 0), 0);
+    // Same strict gate as every other coercion in this file: a `true` in the
+    // parsed spend map is not a spend of 1.
+    const total = Object.values(spendObj).reduce((sum, v) => sum + Math.abs(_strictNum(v) ?? 0), 0);
     el.textContent = String(total);
   } catch {
     el.textContent = '0';
