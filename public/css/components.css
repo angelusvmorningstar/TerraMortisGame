@@ -4232,34 +4232,126 @@ html:not([data-theme="dark"]) .sk-spec-row  span { color: var(--crim) !important
 .feeding-result { text-align: center; padding: 24px; }
 .feeding-suc { font-family: var(--fl); font-size:3rem; color: var(--accent); }
 .feeding-suc-label { font-family: var(--fl); font-size:0.8125rem; color: var(--txt3); letter-spacing: .1em; text-transform: uppercase; margin-bottom: 16px; }
-.feeding-dice-row { display: flex; flex-wrap: wrap; gap: 4px; justify-content: center; margin: 16px 0; }
 .feeding-vessels { margin-top: 16px; }
 .feeding-v-num { font-family: var(--fl); font-size:2.25rem; color: var(--accent); }
 .feeding-v-label { font-size:0.8125rem; color: var(--txt2); }
 .feeding-no-vessels { color: var(--txt3); font-style: italic; margin-top: 16px; }
-.feeding-vessels-grid { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 16px; justify-content: center; }
-.feeding-vessel-card { display: flex; align-items: center; gap: 10px; padding: 10px 14px; background: var(--surf); border: 1px solid var(--bdr); border-radius: var(--radius-md); }
-.fvc-label { font-family: var(--fl); font-size: 0.75rem; color: var(--txt3); min-width: 62px; }
-.fvc-val { font-size: 0.8125rem; color: var(--txt2); min-width: 52px; }
-.fvc-select { background: var(--surf2); border: 1px solid var(--bdr); border-radius: var(--radius-sm); color: var(--txt); font-size: 0.8125rem; padding: 4px 8px; }
-.fvc-consequence { font-size: 0.75rem; min-width: 100px; }
-.fvc-consequence.fvc-safe { color: var(--accent); }
-.fvc-consequence.fvc-drained { color: var(--chip-draft); }
-.fvc-consequence.fvc-serious { color: var(--crim); }
-.fvc-consequence.fvc-critical { color: var(--dmg-crit); }
-/* ── Vitae Tally Card (player portal) ── */
-.fvt-card { margin: 16px 0; padding: 14px 16px; background: var(--surf); border: 1px solid var(--bdr); border-radius: var(--radius-md); font-size: 0.8125rem; }
-.fvt-title { font-family: var(--fl); font-size: var(--fs-floor-micro); letter-spacing: .12em; text-transform: uppercase; color: var(--gold2); margin-bottom: 10px; }
-.fvt-row { display: flex; justify-content: space-between; align-items: baseline; padding: 3px 0; color: var(--txt2); }
-.fvt-row .fvt-label { color: var(--txt2); }
-.fvt-row .fvt-val { font-family: var(--fm); font-variant-numeric: tabular-nums; min-width: 36px; text-align: right; }
-.fvt-pos .fvt-val { color: var(--green3); }
-.fvt-neg .fvt-val { color: var(--err); }
-.fvt-total { border-top: 1px solid var(--bdr); margin-top: 4px; padding-top: 6px; color: var(--txt); font-weight: 600; }
-.fvt-total .fvt-val { color: var(--gold2); }
-.fvt-divider { height: 1px; background: var(--bdr); margin: 6px 0; }
 
-.fvc-total { margin-top: 12px; font-size: 0.875rem; color: var(--txt2); }
+/* ══════════════════════════════════════════════════════════════════════════
+   STORY 12.4 - THE DOWNTIME FORM'S OWN FEEDING COMPONENTS, PORTED
+   ══════════════════════════════════════════════════════════════════════════
+   Angelus, 2026-09-10: "I want the feeding roll interface to MATCH css and
+   style of what's in the form." Every rule between here and the end of this
+   block is copied from TM Story's public/css/downtime-form.css (833-914) with
+   its real token references intact - the visual TREATMENT moved, not just the
+   class name. TM Story's own header comments record their provenance (Stories
+   34-3-L1/34-3-L2 from specs/mockups/downtime-form/index.html, the Epic-47
+   aggravated-box fix); nothing here is a fresh design decision.
+
+   Retired by this block, having lost every consumer in public/ (feeding-tab.js
+   was the only one; the root-level legacy index.html carries its own inline
+   copy and links no stylesheet from css/ at all):
+     .feeding-dice-row .fvc-label .fvc-val .fvc-consequence(+4 tiers)
+     .fvc-total .fvt-card .fvt-title .fvt-row .fvt-label .fvt-val
+     .fvt-pos .fvt-neg .fvt-total .fvt-divider
+   .fvc-select and .fvc-alloc-badge SURVIVE - see the AC 2 decision recorded in
+   feeding-tab.js's own renderVesselAllocation() header. */
+
+/* --- the vessel-drain cards (downtime-form.css:872-895) --- */
+.feeding-vessels-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 10px; margin: 10px 0; }
+.vd-card { background: var(--surf2); border: 1px solid var(--bdr2); border-radius: var(--radius-md); padding: 10px 12px; }
+/* .feeding-result is text-align:center (it centres the big success numeral);
+   the ported cards are left-aligned components and must not inherit that.
+   Caught by measuring the rendered card, not by reading the port. */
+.feeding-result .vd-card { text-align: left; }
+.vd-card-head { display: flex; justify-content: space-between; align-items: baseline; font-size: 12.5px; color: var(--txt2); margin-bottom: 8px; }
+.vd-tier { font-size: 11px; font-weight: 700; }
+.vd-tier.vd-safe { color: var(--good); }
+.vd-tier.vd-drained { color: var(--warn); }
+.vd-tier.vd-serious { color: var(--crim); }
+.vd-tier.vd-critical, .vd-tier.vd-fatal { color: var(--crim2); text-transform: uppercase; letter-spacing: .03em; }
+[data-theme="dark"] .vd-tier.vd-serious { color: var(--crim-readable); }
+.vd-boxes { display: flex; gap: 3px; margin-bottom: 6px; flex-wrap: wrap; }
+.vd-box { width: 20px; height: 20px; padding: 0; border: 1px solid var(--bdr2); border-radius: var(--radius-sm); background: var(--surf1); cursor: pointer; }
+.vd-box:hover { border-color: var(--crim); }
+/* TM Story's boxes are always <button>s because they are always clickable.
+   TM Game renders the same boxes as a pure read-out (Story 12.4 AC 1), so a
+   read-only box is a <span> - selected structurally rather than with a new
+   modifier class, so the ported rule above stays verbatim. */
+.vd-box:not(button) { cursor: default; }
+.vd-box:not(button):hover { border-color: var(--bdr2); }
+.vd-box-filled.vd-c-green { background: var(--good); border-color: var(--good); }
+.vd-box-filled.vd-c-amber { background: var(--warn); border-color: var(--warn); }
+.vd-box-filled.vd-c-red { background: var(--crim); border-color: var(--crim); }
+.vd-box-filled:not(button):hover { border-color: transparent; }
+.vd-box-filled.vd-c-green:not(button):hover { border-color: var(--good); }
+.vd-box-filled.vd-c-amber:not(button):hover { border-color: var(--warn); }
+.vd-box-filled.vd-c-red:not(button):hover { border-color: var(--crim); }
+.vd-vitae-count { font-size: 11.5px; color: var(--txt3); }
+.vd-summary { font-size: 12px; color: var(--txt3); margin-top: 10px; }
+
+/* --- the Vitae Projection ledger (downtime-form.css:833-839) ---
+   NAME COLLISION, fixed after external review (Codex, Story 12.4 Medium 1).
+   These declarations are TM Story's, ported verbatim, but their ORIGINAL class
+   names could not come with them: `.dt-vitae-budget/-row/-pos/-cost/-total` are
+   ALREADY TAKEN in this repo by a completely unrelated pre-existing feature -
+   the downtime form's own Vitae Projection panel (components.css:3699-3742,
+   markup at public/js/tabs/downtime-form.js:7444-7462, covered by
+   tests/dt-vitae-projection.spec.js and three more dt-form specs).
+
+   Sharing the names broke BOTH features at once: being later in the file, this
+   block silently restyled the downtime form's panel in both themes, while the
+   older, MORE SPECIFIC `.dt-vitae-cost span:last-child` / `.dt-vitae-pos
+   span:last-child` rules (3721-3722) beat these row-level colours, so the
+   feeding ledger never got --good/--crim-readable at all.
+
+   Renamed rather than namespaced under a `.feeding-wrap` parent: a parent
+   selector would leave BOTH rule sets matching the same elements and turn every
+   property into a specificity race (the 3699 block's own font-size and its
+   `span:last-child` colours would still have had to be fought off one by one).
+   Distinct names mean neither feature can reach the other at all. The prefix
+   follows this tab's own `feed-tally` / `feeding-*` convention. --- */
+.feed-ledger { margin-top: 14px; padding: 12px 14px; background: var(--surf1); border: 1px solid var(--bdr); border-radius: var(--radius-md); }
+.feeding-result .feed-ledger, .feeding-wrap > .feed-ledger { text-align: left; }
+.feed-ledger-title { font-family: var(--type-heading); font-size: 12px; color: var(--gold2); margin-bottom: 8px; text-transform: uppercase; letter-spacing: .05em; }
+.feed-ledger-row { display: flex; justify-content: space-between; gap: 12px; font-size: 12.5px; padding: 3px 0; color: var(--txt2); }
+.feed-ledger-pos { color: var(--good); }
+.feed-ledger-cost { color: var(--crim); }
+[data-theme="dark"] .feed-ledger-cost { color: var(--crim-readable); }
+.feed-ledger-total { border-top: 1px solid var(--bdr); margin-top: 6px; padding-top: 6px; font-weight: 700; color: var(--gold2); }
+
+/* --- the aggravated-healing boxes (downtime-form.css:908-914, Epic-47).
+   DUAL-CODED, never colour alone: an unhealed box stays red, a healed box
+   shifts to the vitae/green family AND gains a tick. Ported, not reinvented:
+   TM Story already answered "how do we show aggravated healing". Read-only
+   here (TM Game only ever displays the player's committed declaration), so
+   the same :not(button) treatment as .vd-box above. --- */
+.dt-agg-boxes { display: flex; flex-wrap: wrap; gap: 3px; margin: 8px 0; }
+.dt-agg-box { width: 20px; height: 20px; padding: 0; border: 1px solid var(--crim2); border-radius: var(--radius-sm); background: var(--crim2); cursor: pointer; position: relative; }
+.dt-agg-box:not(button) { cursor: default; }
+.dt-agg-box:disabled { opacity: .5; cursor: not-allowed; }
+.dt-agg-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.dt-agg-box-healed { background: var(--good); border-color: var(--good); }
+.dt-agg-box-healed::after { content: '\2713'; position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 12px; line-height: 1; color: var(--bg); }
+.dt-agg-summary { font-size: 12px; color: var(--txt3); margin-top: 6px; }
+
+/* --- the dice (downtime-form.css:850-860). The column-with-connector-stem
+   SHAPE is TM Game's own to begin with - .dcol/.xconn in suite.css:236-237,
+   built by roll-v2.js's mkColsEl() - and TM Story ported it from here. What
+   moves back is the feeding-scale SKIN over that same shape, so the two apps
+   render one roll identically. --- */
+.feeding-roll-dice { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-start; justify-content: center; margin: 16px 0; }
+.feeding-die { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: var(--radius-sm); border: 1px solid var(--bdr2); background: var(--paper); font-family: var(--type-display); font-size: 12px; color: var(--txt3); }
+.feeding-die-hit { background: var(--good); border-color: var(--good); color: var(--bg); font-weight: 700; }
+.feeding-dice-col { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+.feeding-die-conn { width: 2px; height: 5px; background: var(--gdim); }
+
+/* --- kept, not ported: TM Story's form has no equivalent, and AC 2's decision
+   is to keep TM Game's own <select> control. Recomposed onto the same chrome
+   the .vd-box strip beside it uses (--surf1 / --bdr2 / --radius-sm) so the
+   editable card reads as the same component as the read-only one. --- */
+.fvc-select { background: var(--surf1); border: 1px solid var(--bdr2); border-radius: var(--radius-sm); color: var(--txt); font-size: 12.5px; padding: 4px 8px; width: 100%; margin-bottom: 6px; }
+.fvc-select:hover, .fvc-select:focus { border-color: var(--crim); }
 .fvc-alloc-badge { display: inline-block; margin-top: 12px; padding: 6px 14px; background: var(--surf); border: 1px solid var(--green3); border-radius: var(--radius-md); color: var(--green3); font-size: 0.75rem; font-family: var(--fl); text-transform: uppercase; letter-spacing: .08em; }
 .feeding-dramatic { margin-top: 16px; padding: 16px; background: var(--surf); border: 1px solid var(--err); border-radius: var(--radius-md); color: var(--err); font-size: 0.875rem; text-align: center; }
 .feeding-overfeed-warn { font-size: 0.75rem; color: var(--err); margin-top: 8px; }
@@ -5118,7 +5210,6 @@ html:not([data-theme="dark"]) .sk-spec-row  span { color: var(--crim) !important
 html:not([data-theme="dark"]) .feeding-roll-btn,
 html:not([data-theme="dark"]) .feeding-confirmed-head,
 html:not([data-theme="dark"]) .feeding-rote-badge,
-html:not([data-theme="dark"]) .fvc-label,
 html:not([data-theme="dark"]) .fvc-alloc-badge,
 html:not([data-theme="dark"]) .story-section-head,
 html:not([data-theme="dark"]) .story-cycle-label,

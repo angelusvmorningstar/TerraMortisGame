@@ -6,17 +6,31 @@
  * One roll, then locked. STs can re-run.
  *
  * States: loading → ready → rolled | no_submission (generic picker)
+ *                 → rolled-from-form (Epic 12: the roll already happened in TM
+ *                   Story's downtime form; read-only here, never re-rollable)
+ *
+ * Story 12.3 adds one thing that belongs to no state: a standing Influence +
+ * Willpower tally card, rendered in every state except loading.
  */
 
-import { apiGet, apiPut } from '../data/api.js';
+import { apiGet, apiPut, apiRaw } from '../data/api.js';
+import { fetchStoryFeeding } from '../data/story-feeding.js';
 import { getFeedingCycle } from '../downtime/db.js';
 import { esc, displayName, hasAoE } from '../data/helpers.js';
-import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecStr, calcVitaeMax } from '../data/accessors.js';
+import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecStr, calcVitaeMax, calcWillpowerMax } from '../data/accessors.js';
 import { FEED_METHODS, TERRITORY_DATA } from './downtime-data.js';
 import { SKILLS_MENTAL } from '../data/constants.js';
 import { isSTRole } from '../auth/discord.js';
 import { domMeritContrib, effectiveInvictusStatus, calcTotalInfluence } from '../editor/domain.js';
-import { trackerAdj, trackerRead, trackerReadRaw } from '../game/tracker.js';
+// Review fix (Codex, external, 12.2 High + 12.3 High): `trackerRead()` is no
+// longer read for either the confirm panel or the tally card. It seeds and
+// returns DEFAULTS for any character nothing has loaded yet, which is
+// indistinguishable from real persisted state - it showed a character on
+// Willpower 1/5 as 5/5, and computed an aggravated write from `aggravated: 0`
+// when the character really carried 3 boxes. Both now read the live document
+// (`readTrackerState` below). `trackerReadRaw` stays, but only to keep the
+// tracker card's in-memory cache in step AFTER a successful write.
+import { trackerReadRaw } from '../game/tracker.js';
 // dtlt.1: bonus successes (Stronger Than You). The local dice helpers below
 // stay — they carry this tab's configurable again-threshold, which the shared
 // engine reads from global roll state instead. Only the success RESOLUTION is
@@ -36,7 +50,7 @@ function cntSuc(cols) { let s = 0; cols.forEach(col => { if (col.r.s) s++; col.c
 
 let currentChar = null;
 let container = null;
-let feedingState = 'loading'; // loading | ready | rolled | no_submission | deferred
+let feedingState = 'loading'; // loading | ready | rolled | no_submission | deferred | rolled-from-form
 let declaredMethod = null; // FEED_METHODS entry from downtime submission
 let declaredDisc = '';
 let declaredSpec = '';
@@ -63,7 +77,50 @@ let stRollResult = null; // ST's roll from admin processing (feeding_roll)
 let currentSub = null; // full submission doc for summary rendering
 let vitateTally = null; // feeding_vitae_tally from ST processing
 let _liveTerrDocs = []; // cached from /api/territories — used by territory-key lookups (2026-06-20)
-const _stConfirmed = {}; // charId → {vitae, infSpent} — persists within session
+// Epic 12 (Story 12.2): TM Story's own `content.feeding` sub-document for the
+// active cycle, fetched through Story 12.1's read-only client. Non-null ONLY
+// when it carries a real rollResult, which is what makes it authoritative.
+let storyFeeding = null;
+// Epic 12 (Story 12.3): the SAME fetch's fourth key, `territory_influence`
+// (`content.territory_influence` verbatim, or null). Deliberately captured
+// outside the rollResult precedence test below, because the tally card it
+// feeds is standing information that renders in every state, not just the
+// form-sourced one. Shape on a current-format submission (TM Story's own
+// content-shape.js `territoryInfluence`): { spends: [{ territory, amount }] }.
+let storyTerritoryInfluence = null;
+// The active cycle's _id as a string. Also the value of the tracker_state
+// idempotency marker written when a form-sourced roll's aggHealed is applied.
+let activeCycleId = null;
+// The raw tracker_state document, read live once per render pass, for both
+// roles. Carries fields tracker.js's own in-memory cache does not map, notably
+// the feeding_agg_healed_cycle_id marker.
+let trackerDoc = null;
+// How that read went: 'ok' (a real document), 'absent' (404 - this character
+// genuinely has no tracker document yet, so defaults ARE the true answer), or
+// 'error' (the read itself failed - the real state is UNKNOWN). null before the
+// first read of a render pass. Nothing may compute a write from 'error'.
+let trackerLoad = null;
+// Set for the duration of a confirm write, so a second click (or a second
+// handler invocation) cannot start a duplicate one.
+let _confirmInFlight = false;
+// The tracker_state field the aggHealed idempotency marker lives in. TM Game
+// has no write path to tm_story (Story 12.2 grounding), so an "already applied"
+// flag cannot be written back onto TM Story's submission — it lives here, in
+// the one collection this tab already writes to.
+export const AGG_HEALED_MARKER = 'feeding_agg_healed_cycle_id';
+// `charId|cycleId` → {vitae, infSpent, ...} — persists within the session.
+// Review fix (Codex, external, 12.2 Low): keyed by character AND cycle. Keyed by
+// character alone, a confirmation recorded against the PREVIOUS cycle went on
+// hiding the confirm controls after the active cycle changed without a page
+// reload, silently skipping the new cycle's own aggHealed.
+const _stConfirmed = {};
+
+// `cycleId` is explicit so an in-flight write can key its own result against
+// the cycle it STARTED in (review fix, Codex, external, third round, Medium),
+// rather than whatever cycle happens to be active when the response lands.
+function stConfirmKey(charId, cycleId = activeCycleId) {
+  return String(charId) + '|' + (cycleId || '');
+}
 
 // Resolve a feeding_territories grid key (slug OR ObjectId hex string) to a
 // TERRITORY_DATA entry. After the territory-FK migration the grid keys are
@@ -106,6 +163,11 @@ export async function renderFeedingTab(el, char) {
   stRollResult = null;
   currentSub = null;
   vitateTally = null;
+  storyFeeding = null;
+  storyTerritoryInfluence = null;
+  activeCycleId = null;
+  trackerDoc = null;
+  trackerLoad = null;
 
   // Fetch live territory ambience from DB (used by computeVitateTally)
   let liveTerrDocs = [];
@@ -171,6 +233,53 @@ export async function renderFeedingTab(el, char) {
     </div>`;
     container = document.getElementById('feeding-left-pane');
     renderFeedingHistoryPane(document.getElementById('feeding-right-pane'), char);
+    return;
+  }
+
+  activeCycleId = String(activeCycle._id);
+
+  // ── Epic 12 (Story 12.2): TM Story's own downtime form is where the roll
+  // actually happens now. Epic 8 moved downtime storage to tm_story, so
+  // `mySub` below is structurally absent for Game 8 and every cycle after it —
+  // the cross-app read is the only place a live roll can come from.
+  //
+  // PRECEDENCE (AC 1): a real rollResult from TM Story is authoritative for
+  // this cycle and the TM-Game-sourced lookup below is skipped entirely. Any
+  // other outcome (fetch failed, no submission, historical document with no
+  // rollResult) falls through to the existing state machine unchanged, which
+  // still serves residual old-format data correctly.
+  // Review fix (Codex, external, 12.2 High + 12.3 High): the character's LIVE
+  // tracker_state, read once per render pass, for both roles, before anything
+  // renders a tracker figure or computes a write from one. It used to be read
+  // only inside the form-sourced branch and only for an ST, which left the
+  // Story 12.3 tally card - rendered in every state, for everyone - on
+  // `trackerRead()`'s seeded defaults. Both reads now share this one request.
+  const [storyRes, trackerRes] = await Promise.all([
+    fetchStoryFeeding(String(char._id), activeCycleId),
+    readTrackerState(String(char._id)),
+  ]);
+  if (currentChar !== charSnapshot) return;
+  trackerLoad = trackerRes.status;
+  trackerDoc = trackerRes.doc;
+
+  // Story 12.3: the tally card's declared-spend figure comes off THIS response,
+  // not a second request. `fetchStoryFeeding` returns TM Story's whole body
+  // verbatim, so the fourth key is already here whichever branch runs below;
+  // a failed fetch (network, CORS, 404) leaves it null and the card degrades to
+  // current values alone.
+  storyTerritoryInfluence = storyRes?.ok ? (storyRes.data?.territory_influence ?? null) : null;
+
+  // Review fix (Codex, external, 12.2 Medium): ANY truthy `rollResult` used to
+  // win here, so `{}`, `[]`, a bare string or a historical partial object
+  // activated the read-only state and rendered a fabricated "locked" result of
+  // zero successes and no dice, instead of falling through to the old state
+  // machine. Only a genuinely usable shape activates it now, and what it
+  // activates on is the NORMALISED copy - see normaliseStoryFeeding.
+  if (storyRes?.ok && isUsableStoryRoll(storyRes.data?.feeding)) {
+    storyFeeding = normaliseStoryFeeding(storyRes.data.feeding);
+    feedingState = 'rolled-from-form';
+    mountFeedingPanes(el, char);
+    render();
     return;
   }
 
@@ -300,14 +409,184 @@ export async function renderFeedingTab(el, char) {
   }
 
   // Set up split layout
+  mountFeedingPanes(el, char);
+
+  render();
+}
+
+/**
+ * The tab's two-pane shell. Extracted verbatim (Story 12.2) so the new
+ * form-sourced state mounts exactly the layout every other fall-through state
+ * already does, rather than carrying a second copy of the same markup.
+ */
+function mountFeedingPanes(el, char) {
   el.innerHTML = `<div class="tab-split">
     <div class="tab-split-left" id="feeding-left-pane"></div>
     <div class="tab-split-right" id="feeding-right-pane"></div>
   </div>`;
   container = document.getElementById('feeding-left-pane');
   renderFeedingHistoryPane(document.getElementById('feeding-right-pane'), char);
+}
 
-  render();
+/**
+ * The character's live tracker_state document, as a tri-state result.
+ *
+ * tracker.js's in-memory cache is deliberately NOT consulted: it maps a fixed
+ * field list (see its `ensureLoaded`) and drops anything else, so the aggHealed
+ * idempotency marker cannot be read back through it at all, and - the reason
+ * this function exists at all - `trackerRead()` SEEDS AND RETURNS DEFAULTS for
+ * a character nothing has loaded yet. This tab never calls `ensureLoaded`, so
+ * on a fresh session those defaults were the only thing it ever saw.
+ *
+ * Uses `apiRaw` rather than `apiGet` because the status code is the whole
+ * point: `apiGet` throws identically on a 404 and on a 500 or a dropped
+ * connection, and those two mean opposite things here.
+ *
+ *   'ok'      a real document came back; `doc` is it.
+ *   'absent'  404 - this character genuinely has no tracker document yet, so
+ *             defaults (full Willpower/Influence, no damage, no marker) are the
+ *             true answer, not a guess.
+ *   'error'   the read failed. The real state is UNKNOWN. Callers must render
+ *             "Unavailable" and must not compute any write from it.
+ */
+async function readTrackerState(charId) {
+  let res;
+  try {
+    res = await apiRaw('GET', '/api/tracker_state/' + charId);
+  } catch {
+    return { status: 'error', doc: null };
+  }
+  if (res.ok && res.body && typeof res.body === 'object') return { status: 'ok', doc: res.body };
+  if (res.status === 404) return { status: 'absent', doc: null };
+  return { status: 'error', doc: null };
+}
+
+/**
+ * The three tracker figures this tab uses, or null when the read failed.
+ *
+ * Returns plain numbers only. `null` means "unknown", and is never silently
+ * substituted with a default: that substitution is exactly the bug this
+ * replaces.
+ */
+function trackerFigures() {
+  if (!currentChar) return null;
+  if (trackerLoad === 'absent') {
+    // No document: the server has never been told otherwise, so the character
+    // is at full Willpower and Influence with no damage and no marker.
+    return {
+      willpower: calcWillpowerMax(currentChar),
+      inf: calcTotalInfluence(currentChar),
+      aggravated: 0,
+      marker: '',
+    };
+  }
+  if (trackerLoad !== 'ok' || !trackerDoc) return null;
+  // Same strict gate as the TM Story boundary below (`_strictNum`): a stored
+  // `willpower: true` must fall back to the real maximum, not silently read as
+  // Willpower 1.
+  const num = (v, fallback) => { const n = _strictNum(v); return n === null ? fallback : n; };
+  return {
+    willpower: num(trackerDoc.willpower, calcWillpowerMax(currentChar)),
+    inf: num(trackerDoc.influence, calcTotalInfluence(currentChar)),
+    aggravated: Math.max(0, Math.trunc(num(trackerDoc.aggravated, 0))),
+    marker: String(trackerDoc[AGG_HEALED_MARKER] || ''),
+  };
+}
+
+// ── TM Story payload validation + normalisation ───────────────────────────────
+// Review fix (Codex, external, 12.2 High/Medium). TM Story is a genuinely
+// EXTERNAL app: its response is not this app's own trusted database, and its
+// values were being interpolated into innerHTML raw. A single corrupted or
+// hostile `dice` entry such as `</span><img src=x onerror=...>` executed in TM
+// Game's own origin, where the Discord bearer token lives in localStorage.
+// Nothing from that payload now reaches the DOM except numbers this file
+// produced itself, and the two strings it keeps go through `esc()` as before.
+
+/**
+ * A finite number, but ONLY from a value that is genuinely numeric to begin
+ * with: a JSON number, or a non-blank string that parses cleanly. Anything else
+ * - a boolean, an array, an object, `null`, `undefined`, a blank string - is
+ * `null`, meaning "not a number at all".
+ *
+ * Review fix (Codex, external, third round, Medium): `Number()` alone is not a
+ * type check. `Number(true)` is 1, `Number([8])` is 8 and `Number([])` is 0, so
+ * a payload such as `dice: [true, [8]]` or `vesselVitae: [true, 2]` coerced to
+ * `[1, 8]` / `[1, 2]` and rendered as though those were real values - which
+ * weakens the very boundary validation the previous round added. The typeof
+ * gate goes BEFORE the coercion, not after it. `_spendAmount` below already
+ * worked this way for exactly the same reason; this is that discipline applied
+ * to every other coercion in the file.
+ */
+function _strictNum(v) {
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v === 'string' && v.trim() !== '') {
+    const n = Number(v);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
+}
+
+/** A die: an integer 1-10. Anything else is not a die. */
+function _die(v) {
+  const n = _strictNum(v);
+  return (n !== null && Number.isInteger(n) && n >= 1 && n <= 10) ? n : null;
+}
+
+/** A vessel's vitae: a finite integer, floored at 0 and bounded well above any
+ *  real value (a Human vessel tops out at 7; an Animal feed records one pooled
+ *  total, which is larger but still small). */
+function _vesselVitae(v) {
+  const n = _strictNum(v);
+  if (n === null) return null;
+  const i = Math.trunc(n);
+  return (i >= 0 && i <= 99) ? i : null;
+}
+
+/**
+ * Is this a feeding sub-document carrying a roll we can actually display?
+ *
+ * Requires a plain object with a plain-object `rollResult`, a real `dice`
+ * array, and a non-negative integer `successes`. `{}`, `[]`, a bare string and
+ * a historical partial block all fail, and fall through to the old TM
+ * Game-sourced state machine exactly as "no usable roll" already did.
+ */
+export function isUsableStoryRoll(f) {
+  if (!f || typeof f !== 'object' || Array.isArray(f)) return false;
+  const rr = f.rollResult;
+  if (!rr || typeof rr !== 'object' || Array.isArray(rr)) return false;
+  if (!Array.isArray(rr.dice)) return false;
+  if (!Number.isInteger(rr.successes) || rr.successes < 0) return false;
+  return true;
+}
+
+/**
+ * A sanitised copy carrying ONLY the fields the read-only view renders, each
+ * coerced to a type that view can safely produce markup from. Dice and vessel
+ * values that are not real numbers are dropped rather than rendered; the two
+ * remaining strings (`method`, `bloodType`) are kept as strings and stay
+ * `esc()`-ed at the point of use.
+ */
+export function normaliseStoryFeeding(f) {
+  const rr = f.rollResult;
+  const again = _strictNum(rr.again);
+  const pool = _strictNum(rr.pool);
+  return {
+    method: typeof f.method === 'string' ? f.method : '',
+    bloodType: typeof f.bloodType === 'string' ? f.bloodType : '',
+    aggHealed: (Number.isInteger(f.aggHealed) && f.aggHealed > 0) ? f.aggHealed : 0,
+    vesselVitae: (Array.isArray(f.vesselVitae) ? f.vesselVitae : [])
+      .map(_vesselVitae).filter(v => v !== null),
+    rollResult: {
+      pool: (pool !== null && Number.isInteger(pool) && pool >= 0) ? pool : null,
+      dice: rr.dice.map(_die).filter(d => d !== null),
+      successes: rr.successes,
+      exceptional: rr.exceptional === true,
+      dramatic_failure: rr.dramatic_failure === true,
+      rote: rr.rote === true,
+      chance: rr.chance === true,
+      again: (again === 8 || again === 9) ? again : 10,
+    },
+  };
 }
 
 async function renderFeedingHistoryPane(el, char) {
@@ -591,22 +870,139 @@ function computeVitateTally(char, sub, liveTerrDocs = []) {
 // ── Render vitae breakdown card ───────────────────────────────────────────────
 function renderVitaeTallyCard(tally, vessels = null) {
   if (!tally) return '';
-  let h = '<div class="fvt-card">';
-  h += '<div class="fvt-title">Vitae Sources</div>';
-  if (vessels !== null) h += `<div class="fvt-row"><span class="fvt-label">Vessels (from roll)</span><span class="fvt-val">${vessels}</span></div>`;
-  if (tally.herd)         h += `<div class="fvt-row fvt-pos"><span class="fvt-label">Herd</span><span class="fvt-val">+${tally.herd}</span></div>`;
-  if (tally.oath_of_fealty) h += `<div class="fvt-row fvt-pos"><span class="fvt-label">Oath of Fealty</span><span class="fvt-val">+${tally.oath_of_fealty}</span></div>`;
+  // Story 12.4: recomposed onto TM Story's own "Vitae Projection" ledger
+  // (downtime-form.css:833-839, rendered by its sections/feeding.js:560-566).
+  // Same row/label/value SHAPE as the old .fvt-card - only the class names and
+  // their treatment change; the tally computation above is untouched.
+  //
+  // Two faithful-port differences worth naming: TM Story colours the WHOLE ROW
+  // (.feed-ledger-row.feed-ledger-pos / -cost) where .fvt-pos coloured only
+  // the number, and the `.fvt-divider` element is dropped because
+  // .feed-ledger-total carries its own border-top - keeping it drew two rules.
+  //
+  // Review fix (Codex, external, 12.4 Medium 1): the ported CLASS NAMES are
+  // `.feed-ledger*`, not TM Story's own `.dt-vitae-*`. Those names were already
+  // in use in THIS repo by the downtime form's unrelated Vitae Projection panel
+  // (downtime-form.js:7444), and sharing them restyled that panel while denying
+  // this card its own colours. Declarations are still TM Story's, verbatim; see
+  // the rule block at components.css for the full reasoning.
+  let h = '<div class="feed-ledger">';
+  h += '<div class="feed-ledger-title">Vitae Sources</div>';
+  if (vessels !== null) h += `<div class="feed-ledger-row"><span>Vessels (from roll)</span><span>${vessels}</span></div>`;
+  if (tally.herd)         h += `<div class="feed-ledger-row feed-ledger-pos"><span>Herd</span><span>+${tally.herd}</span></div>`;
+  if (tally.oath_of_fealty) h += `<div class="feed-ledger-row feed-ledger-pos"><span>Oath of Fealty</span><span>+${tally.oath_of_fealty}</span></div>`;
   if (tally.ambience != null && tally.ambience !== 0) {
     const lbl = tally.ambience_territory ? `Ambience (${tally.ambience_territory})` : 'Ambience';
-    const cls = tally.ambience > 0 ? ' fvt-pos' : ' fvt-neg';
+    const cls = tally.ambience > 0 ? ' feed-ledger-pos' : ' feed-ledger-cost';
     const sign = tally.ambience > 0 ? '+' : '';
-    h += `<div class="fvt-row${cls}"><span class="fvt-label">${esc(lbl)}</span><span class="fvt-val">${sign}${tally.ambience}</span></div>`;
+    h += `<div class="feed-ledger-row${cls}"><span>${esc(lbl)}</span><span>${sign}${tally.ambience}</span></div>`;
   }
-  if (tally.ghouls)    h += `<div class="fvt-row fvt-neg"><span class="fvt-label">Ghoul retainers</span><span class="fvt-val">\u2212${tally.ghouls}</span></div>`;
-  if (tally.rite_cost) h += `<div class="fvt-row fvt-neg"><span class="fvt-label">Rite costs</span><span class="fvt-val">\u2212${tally.rite_cost}</span></div>`;
-  if (tally.manual)    h += `<div class="fvt-row${tally.manual > 0 ? ' fvt-pos' : ' fvt-neg'}"><span class="fvt-label">Adjustment</span><span class="fvt-val">${tally.manual > 0 ? '+' : ''}${tally.manual}</span></div>`;
-  h += '<div class="fvt-divider"></div>';
-  h += `<div class="fvt-row fvt-total"><span class="fvt-label">Bonus vitae</span><span class="fvt-val">+${tally.total_bonus}</span></div>`;
+  if (tally.ghouls)    h += `<div class="feed-ledger-row feed-ledger-cost"><span>Ghoul retainers</span><span>\u2212${tally.ghouls}</span></div>`;
+  if (tally.rite_cost) h += `<div class="feed-ledger-row feed-ledger-cost"><span>Rite costs</span><span>\u2212${tally.rite_cost}</span></div>`;
+  if (tally.manual)    h += `<div class="feed-ledger-row${tally.manual > 0 ? ' feed-ledger-pos' : ' feed-ledger-cost'}"><span>Adjustment</span><span>${tally.manual > 0 ? '+' : ''}${tally.manual}</span></div>`;
+  h += `<div class="feed-ledger-row feed-ledger-total"><span>Bonus vitae</span><span>+${tally.total_bonus}</span></div>`;
+  h += '</div>';
+  return h;
+}
+
+/**
+ * Story 12.3: the Influence the player has DECLARED spending in this cycle's
+ * downtime form, summed off TM Story's `territory_influence.spends[]`.
+ *
+ * Returns null - not 0 - when there is no `territory_influence` at all (a draft,
+ * or a cycle predating TM Story's Story 11.3b), so the caller can leave the row
+ * out entirely rather than print a "0 declared" that looks like real data. An
+ * EMPTY `spends` array is a different thing: the section exists on the
+ * submission and records no spend, so 0 is the true figure and is shown.
+ *
+ * Absolute value, not signed sum: `amount` is signed only because it says which
+ * direction the ambience moves (positive improves, negative degrades). TM
+ * Story's own budget maths (`public/js/downtime-form/influence-budget.js`,
+ * `totalSpent`) charges 1 Influence per point EITHER WAY, so a signed sum would
+ * under-report, and a mix of +2 and -2 would report a spend of nothing at all.
+ *
+ * Review fix (Codex, external, 12.3 Low): returns the string 'unavailable' -
+ * not 0 - for a NON-EMPTY spends array in which no entry carries a readable
+ * amount. `{ spends: [{ amount: 'lots' }] }` used to reduce to 0 and print
+ * "0 declared" as though that were the player's real declaration. A mix is
+ * still summed from the readable entries, which is the closest true figure
+ * available.
+ */
+export function declaredInfluenceSpend(ti) {
+  const spends = ti && Array.isArray(ti.spends) ? ti.spends : null;
+  if (!spends) return null;
+  if (!spends.length) return 0;        // genuinely zero: the section exists and records no spend
+  let total = 0, readable = 0;
+  for (const s of spends) {
+    const n = _spendAmount(s?.amount);
+    if (n === null) continue;
+    readable += 1;
+    total += Math.abs(n);
+  }
+  return readable ? total : 'unavailable';
+}
+
+/**
+ * One `spends[].amount`, as a signed integer, or null when it is not a readable
+ * amount at all. `null`, `undefined`, `''`, `true` and objects all coerce to a
+ * NUMBER through `Number()` (0, 0, 0, 1, NaN) - which is how a malformed entry
+ * used to pass for a real declaration of zero.
+ */
+function _spendAmount(v) {
+  const n = _strictNum(v);
+  return n === null ? null : Math.trunc(n);
+}
+
+/**
+ * Story 12.3: the standing Influence + Willpower tally.
+ *
+ * Rendered in every state, alongside whatever the tab is otherwise showing:
+ * it is information about the character, not a step in the feeding flow.
+ *
+ * Both current figures come from the SAME live tracker_state read the ST
+ * confirm panel uses (`readTrackerState`, once per render pass) - one source,
+ * no second one invented here. Willpower is read and shown plainly: no spend
+ * itemisation for it exists anywhere in either app, so there is nothing to net
+ * it against.
+ *
+ * Review fix (Codex, external, 12.3 High): this used to read `trackerRead()`,
+ * whose cache SEEDS DEFAULTS for any character nothing has loaded yet - so on a
+ * fresh session a character really on Willpower 1/5 and Influence 2/5 rendered
+ * as 5/5 and 5/5, with no way to tell that from real data. "The read failed"
+ * (Unavailable) and "there is no document yet, so full is the true answer" are
+ * now two different things, decided by the HTTP status.
+ *
+ * Influence is deliberately two separate, separately-labelled rows. The
+ * declared figure has NOT been taken off the current total: TM Story's own
+ * Story 11.3b ruled a territory-influence spend is "a declaration resolved at
+ * processing", never a live decrement, so presenting one as net of the other
+ * would misstate what the player has.
+ */
+function renderInfluenceWillpowerTally() {
+  if (!currentChar) return '';
+  const ts = trackerFigures();
+  const declared = declaredInfluenceSpend(storyTerritoryInfluence);
+
+  const wp  = ts ? `${ts.willpower} / ${calcWillpowerMax(currentChar)}` : 'Unavailable';
+  const inf = ts ? `${ts.inf} / ${calcTotalInfluence(currentChar)}` : 'Unavailable';
+
+  // Story 12.4: the same .feed-ledger ledger as the Vitae Sources card above,
+  // so the two tally cards read as one component in two instances - the
+  // form's own treatment. `feed-tally` and the three ids are behavioural
+  // anchors (Story 12.3's tests read them) and are untouched.
+  let h = '<div class="feed-ledger feed-tally" id="feed-tally">';
+  h += '<div class="feed-ledger-title">Influence and Willpower</div>';
+  h += `<div class="feed-ledger-row"><span>Willpower</span><span id="feed-tally-wp">${esc(wp)}</span></div>`;
+  h += `<div class="feed-ledger-row"><span>Influence (current)</span><span id="feed-tally-inf">${esc(inf)}</span></div>`;
+  if (!ts) {
+    h += '<p class="feeding-state-detail">Your tracker could not be read just now, so these figures are not shown rather than guessed at. Reload to try again.</p>';
+  }
+  if (declared !== null) {
+    const shown = declared === 'unavailable' ? 'Unavailable' : String(declared);
+    h += '<div class="feed-ledger-row"><span>Influence declared this cycle (not yet processed)</span>';
+    h += `<span id="feed-tally-declared" data-declared="${esc(shown)}">${esc(shown)}</span></div>`;
+    h += '<p class="feeding-state-detail">Declared spending is not taken off the current total until your Storyteller processes the downtime.</p>';
+  }
   h += '</div>';
   return h;
 }
@@ -619,11 +1015,343 @@ function fvcConseqText(v) {
   return 'Fatal';
 }
 
+/**
+ * Story 12.4: the harm-tier CLASS, now split Critical/Fatal the way TM Story's
+ * own `vesselHarmTier` splits it (feeding-reference.js:336-342) instead of
+ * collapsing both onto one class.
+ *
+ * Not a rule change: `fvcConseqText` above already returned 'Critical' at 6 and
+ * 'Fatal' at 7+, and TM Story's tier ladder is itself a verbatim port OF these
+ * two functions (its own header says so). The two classes render identically
+ * (`.vd-tier.vd-critical, .vd-tier.vd-fatal` share one rule), so this changes
+ * nothing on screen - it just stops the two apps disagreeing about the name of
+ * a tier they already agree about.
+ */
 function fvcConseqClass(v) {
-  if (v <= 2) return 'fvc-safe';
-  if (v === 3) return 'fvc-drained';
-  if (v <= 5) return 'fvc-serious';
-  return 'fvc-critical';
+  if (v <= 2) return 'vd-safe';
+  if (v === 3) return 'vd-drained';
+  if (v <= 5) return 'vd-serious';
+  if (v === 6) return 'vd-critical';
+  return 'vd-fatal';
+}
+
+/**
+ * Story 12.4: which of three colours a single drawn-vitae box fills with.
+ * Ported verbatim from TM Story's `vitaeColourClass`
+ * (public/js/downtime-form/feeding-reference.js:351-355) - Angelus's own live
+ * ruling of 2026-09-02, deliberately SEPARATE from the five-tier label scale
+ * above: 1-2 Vitae green, 3-4 amber, 5+ red.
+ */
+function vitaeColourClass(v) {
+  if (v <= 2) return 'vd-c-green';
+  if (v <= 4) return 'vd-c-amber';
+  return 'vd-c-red';
+}
+
+/**
+ * Story 12.4: one vessel's drain, as the downtime form draws it - a card with a
+ * tier badge, a strip of seven boxes filled to the drawn amount, and the count.
+ * Structure and classes from TM Story's own renderVesselDrain()
+ * (public/js/downtime-form/sections/feeding.js:787-800).
+ *
+ * READ-ONLY by construction. TM Story's boxes are `<button>`s because they are
+ * its input control; here the value is already committed, so each box is a
+ * `<span>` - the story spec explicitly allows this ("a read-only rendering can
+ * use a non-interactive element styled identically"), and components.css's
+ * `.vd-box:not(button)` rules take the pointer/hover affordance back off.
+ *
+ * `label` is emitted verbatim and must be caller-controlled text, never
+ * anything from TM Story's payload.
+ */
+function renderVesselCard(label, vitae) {
+  const v = Math.max(0, Math.min(7, vitae));
+  let h = '<div class="vd-card">';
+  h += `<div class="vd-card-head"><span>${label}</span>`;
+  if (v) h += `<span class="vd-tier ${fvcConseqClass(v)}">${fvcConseqText(v)}</span>`;
+  h += '</div>';
+  h += '<div class="vd-boxes">';
+  for (let b = 1; b <= 7; b++) {
+    const filled = b <= v ? ` vd-box-filled ${vitaeColourClass(b)}` : '';
+    h += `<span class="vd-box${filled}"></span>`;
+  }
+  h += '</div>';
+  h += `<div class="vd-vitae-count">${vitae} vitae drawn</div>`;
+  h += '</div>';
+  return h;
+}
+
+/**
+ * Story 12.4: a flat `dice` array regrouped into one column per BASE die, so an
+ * exploded die's children render below it, connected by a stem.
+ *
+ * Ported verbatim from TM Story's `diceColumns`
+ * (public/js/downtime-form/dice-roll.js:67-78). Pure display grouping - it
+ * reads nothing but the dice it is handed and decides nothing about successes.
+ * The shape it produces is TM Game's own to begin with (suite.css's
+ * `.dcol`/`.xconn`, built by roll-v2.js's `mkColsEl()`); TM Story ported it
+ * from here, and the flat row this replaces was the odd one out.
+ */
+function diceColumns(dice, again) {
+  const cols = [];
+  let prevExploded = false;
+  for (const v of dice || []) {
+    const d = { v, s: v >= 8, x: v >= again };
+    if (!prevExploded) cols.push({ r: d, ch: [] });
+    else cols[cols.length - 1].ch.push(d);
+    prevExploded = d.x;
+  }
+  return cols;
+}
+
+/**
+ * Story 12.4: the dice themselves, in the downtime form's own treatment
+ * (downtime-form.css:850-860, rendered by its sections/feeding.js:619-627).
+ *
+ * `cols` is `[{ r, ch }]`, the shape both this tab's own persisted rolls and
+ * `diceColumns()` above already produce. `isHit` is passed in rather than
+ * assumed, because a chance die succeeds only on a 10 - TM Story fixed exactly
+ * that (a Codex Medium against its own dieHtml) and the flat row this replaces
+ * carried the unfixed `v >= 8` for every roll.
+ *
+ * TM Game's old `.fd-1` botch tint has no equivalent in the form and is dropped
+ * rather than smuggled through: a 1 only carries meaning on a chance die or a
+ * dramatic failure, and both already have their own explicit surfaces here
+ * (`rr.chance`'s badge, `.feeding-dramatic`). Nothing is now shown in one app
+ * and not the other.
+ */
+function renderDiceCols(cols, isHit) {
+  let h = '<div class="feeding-roll-dice">';
+  for (const col of cols) {
+    h += '<div class="feeding-dice-col">';
+    h += `<span class="feeding-die${isHit(col.r.v) ? ' feeding-die-hit' : ''}">${col.r.v}</span>`;
+    for (const d of col.ch) {
+      h += '<div class="feeding-die-conn"></div>';
+      h += `<span class="feeding-die${isHit(d.v) ? ' feeding-die-hit' : ''}">${d.v}</span>`;
+    }
+    h += '</div>';
+  }
+  h += '</div>';
+  return h;
+}
+
+/**
+ * The ST's "Confirm Feed" panel.
+ *
+ * Extracted verbatim from render()'s `rolled` branch by Story 12.2 so the new
+ * form-sourced state reuses the SAME panel, and the same single tracker_state
+ * write, rather than growing a second one beside it.
+ *
+ * `stDefault`   the vitae stepper's starting value.
+ * `aggHealed`   Aggravated boxes the downtime form recorded this feed as
+ *               healing. Always 0 on the existing TM-Game-sourced path, which
+ *               therefore renders exactly as it did before this story.
+ * `formSourced` this is a TM Story roll, so no vitae tally was computed for it.
+ *
+ * Review fix (Codex, external, 12.2 High + 12.2 Medium/idempotency): the panel
+ * FAILS CLOSED. Every figure it offers to write is now read from the live
+ * tracker document; if that read failed, the character's real Influence and
+ * Aggravated counts are unknown, and the panel renders a notice with NO confirm
+ * control at all rather than a stepper pre-filled with a default that would
+ * overwrite real state. In particular "the read failed" is no longer
+ * indistinguishable from "no marker, healing not yet applied", which was one of
+ * the two real double-application routes.
+ */
+function renderStConfirmPanel({ stDefault, aggHealed = 0, formSourced = false }) {
+  const charId = String(currentChar._id);
+  const confirmed = _stConfirmed[stConfirmKey(charId)];
+  const vitaeMax = calcVitaeMax(currentChar);
+  const infMax   = calcTotalInfluence(currentChar);
+  const ts = trackerFigures();
+  if (!ts && !confirmed) {
+    return '<div class="feed-st-confirm"><p class="feeding-state-detail">'
+      + 'The tracker state for this character could not be read, so confirming the feed is unavailable: '
+      + 'writing Vitae, Influence or Aggravated now could overwrite real values with defaults. Reload to try again.'
+      + '</p></div>';
+  }
+  const aggApplied = !!activeCycleId && !!ts && ts.marker === activeCycleId;
+  let h = `<div class="feed-st-confirm">`;
+  if (confirmed) {
+    const vitaeStr = confirmed.vitaeMax != null
+      ? `Vitae ${confirmed.vitae}/${confirmed.vitaeMax}`
+      : `Vitae \u2192 ${confirmed.vitae}`;
+    const infStr = confirmed.infAfter != null && confirmed.infMax != null
+      ? `Inf ${confirmed.infAfter}/${confirmed.infMax}`
+      : confirmed.infSpent > 0 ? `Inf \u2212${confirmed.infSpent}` : null;
+    let rec = vitaeStr;
+    if (infStr) rec += ` \u2002|\u2002 ${infStr}`;
+    if (confirmed.aggHealed) rec += ` \u2002|\u2002 Agg \u2212${confirmed.aggHealed}`;
+    h += `<div class="feed-confirmed-record">\u2713 Feed confirmed \u2014 ${rec}</div>`;
+    h += `<button class="feed-reconfirm-btn" id="feed-reconfirm-btn">Edit</button>`;
+  } else {
+    // Vitae row
+    h += `<div class="feed-st-row">`;
+    h += `<div class="feed-st-row-lbl">Vitae Gained</div>`;
+    h += `<div class="feed-st-row-ctrl">`;
+    h += `<button class="feed-adj" id="feed-confirm-adj-down">\u2212</button>`;
+    h += `<span class="feed-confirm-val" id="feed-confirm-n" data-vit-max="${vitaeMax}">${stDefault}</span>`;
+    h += `<button class="feed-adj" id="feed-confirm-adj-up">+</button>`;
+    h += `</div>`;
+    h += `<div class="feed-st-row-max">/ ${vitaeMax}</div>`;
+    h += `</div>`;
+    // Influence row
+    h += `<div class="feed-st-row">`;
+    h += `<div class="feed-st-row-lbl">Influence Remaining</div>`;
+    h += `<div class="feed-st-row-ctrl">`;
+    h += `<button class="feed-adj" id="feed-inf-adj-down">\u2212</button>`;
+    const _curInf = Math.max(0, Math.min(infMax, ts.inf));
+    h += `<span class="feed-inf-val" id="feed-inf-spent" data-inf-max="${infMax}">${_curInf}</span>`;
+    h += `<button class="feed-adj" id="feed-inf-adj-up">+</button>`;
+    h += `</div>`;
+    h += `<div class="feed-st-row-max">/ ${infMax}</div>`;
+    h += `</div>`;
+    // Aggravated row (Story 12.2, AC 3/AC 4). Read-only by design: the figure
+    // is the player's own committed declaration from the downtime form, and
+    // this app cannot correct a TM-Story-sourced roll (see the ST override
+    // note). #feed-agg-n is also the confirm handler's ONLY source for the
+    // amount, so an already-applied cycle cannot be applied twice: the element
+    // simply is not rendered.
+    if (aggHealed > 0) {
+      if (aggApplied) {
+        h += `<div class="feed-st-row" id="feed-agg-applied">`;
+        h += `<div class="feed-st-row-lbl">Aggravated Healed</div>`;
+        h += `<div class="feed-st-row-ctrl">\u2713 ${aggHealed} already applied this cycle</div>`;
+        h += `</div>`;
+      } else {
+        // Story 12.4: the plain number becomes TM Story's own aggravated-box
+        // treatment (downtime-form.css:908-914, its sections/feeding.js:901-916)
+        // - DUAL-CODED, an unhealed box red, a healed box green PLUS a tick,
+        // never colour alone. Read-only here (spans, not buttons): the figure is
+        // the player's committed declaration and this app has no write path back
+        // to tm_story, which is exactly why the ST cannot edit it.
+        //
+        // Box COUNT is the character's real current Aggravated (`ts.aggravated`,
+        // the live tracker read), first `aggHealed` of them shown healed. When
+        // the form declared more healing than the character still carries, the
+        // strip shows what is really there and the summary still names the
+        // declared figure - the confirm write's own clamp is untouched.
+        const aggTotal = ts ? ts.aggravated : 0;
+        const shownHealed = Math.min(aggHealed, aggTotal);
+        h += `<div class="feed-st-row" id="feed-agg-row">`;
+        h += `<div class="feed-st-row-lbl">Aggravated Healed</div>`;
+        h += `<div class="feed-st-row-ctrl">`;
+        if (aggTotal > 0) {
+          h += '<div class="dt-agg-boxes">';
+          for (let i = 1; i <= aggTotal; i++) {
+            h += `<span class="dt-agg-box${i <= shownHealed ? ' dt-agg-box-healed' : ''}"></span>`;
+          }
+          h += '</div>';
+        }
+        h += `<span class="feed-confirm-val" id="feed-agg-n" data-agg-healed="${aggHealed}">\u2212${aggHealed}</span>`;
+        h += `</div>`;
+        h += `<div class="feed-st-row-max">from the downtime form</div>`;
+        h += `</div>`;
+      }
+    }
+    if (formSourced) {
+      h += `<p class="feeding-state-detail">Bonus vitae (Herd, Oath of Fealty, ambience) is not tallied for a downtime-form roll yet: add it with the stepper.</p>`;
+    }
+    h += `<button class="feed-confirm-btn" id="feed-confirm-btn">Confirm Feed</button>`;
+  }
+  h += `</div>`;
+  return h;
+}
+
+/**
+ * Story 12.2: the read-only view of a roll the player already made in TM
+ * Story's downtime form.
+ *
+ * Renders nothing the player can act on. There is deliberately no roll button,
+ * no vessel <select> and no allocation confirm here: the roll and the vessel
+ * allocation are both already committed, and re-asking for either is the exact
+ * double-work this story exists to remove.
+ *
+ * Story 12.4 recomposed the dice and vessel markup onto TM Story's own
+ * downtime-form components (.feeding-dice-col/.feeding-die, .vd-card/.vd-box),
+ * so this view now looks like the form the player rolled in. Purely visual: the
+ * precedence test, the normalisation boundary and the ST confirm write below
+ * are all untouched.
+ */
+function renderFormSourcedRoll(isST) {
+  // `storyFeeding` is the NORMALISED copy (normaliseStoryFeeding): dice and
+  // vessel values are already integers this file produced, and the two strings
+  // still go through esc() below. Nothing raw from TM Story reaches innerHTML.
+  const f = storyFeeding;
+  const rr = f.rollResult;
+  const dice = rr.dice;
+  const successes = rr.successes;
+  const vessels = f.vesselVitae;
+  const vesselTotal = vessels.reduce((a, b) => a + b, 0);
+
+  let h = '<div class="feeding-result">';
+  h += '<p class="feeding-state-detail">Rolled in your downtime form. This result is final.</p>';
+
+  if (f.method) {
+    h += `<p class="feeding-method-label">Method: <strong>${esc(f.method)}</strong>`;
+    if (rr.rote)      h += ' <span class="feeding-rote-badge">Rote</span>';
+    if (rr.again === 9) h += ' <span class="feeding-again-badge">9-Again</span>';
+    if (rr.again === 8) h += ' <span class="feeding-again-badge">8-Again</span>';
+    if (rr.chance)    h += ' <span class="feeding-again-badge">Chance die</span>';
+    h += '</p>';
+  }
+  if (rr.pool !== null) {
+    h += '<div class="feeding-pool-display">';
+    h += `<span class="feeding-pool-total">${rr.pool} dice</span>`;
+    h += '</div>';
+  }
+
+  h += `<div class="feeding-suc">${successes}</div>`;
+  h += `<div class="feeding-suc-label">success${successes !== 1 ? 'es' : ''}`;
+  if (rr.exceptional) h += ' (exceptional)';
+  h += '</div>';
+
+  // Story 12.4: the form's own column-and-stem dice, over the same flat array.
+  // `isHit` is chance-aware, matching TM Story's own dieHtml exactly - an 8 on a
+  // chance die is not a hit, and the flat row this replaces coloured it as one
+  // right beside "0 successes".
+  const isHit = v => (rr.chance ? v === 10 : v >= 8);
+  h += renderDiceCols(diceColumns(dice, rr.again), isHit);
+
+  if (rr.dramatic_failure) {
+    h += '<div class="feeding-dramatic">Dramatic failure \u2014 see your Storyteller at game before feeding.</div>';
+  }
+
+  if (!vessels.length) {
+    h += '<p class="feeding-no-vessels">No vessels recorded this hunt.</p>';
+  } else if (f.bloodType === 'Animal') {
+    // An Animal feed records ONE pooled vitae total, not per-vessel harm (TM
+    // Story's own normaliseVesselVitae, public/js/downtime-form/content-shape.js)
+    // - the 0-7 harm scale fvcConseqText encodes does not apply to it, so no
+    // consequence label is rendered for that shape.
+    // Story 12.4: a .vd-card in the shared grid, but deliberately with NO box
+    // strip. TM Story draws one box per point of the SHARED POOL (successes x 3,
+    // its own renderVesselDrain(), feeding.js:716) and TM Game must not
+    // reconstruct that rule - inventing a rules calculation here would be a
+    // logic change, which this story is not. The card, its head and the count
+    // are the form's; only the pool ceiling it cannot honestly know is omitted.
+    h += '<div class="feeding-vessels-grid">';
+    h += '<div class="vd-card">';
+    h += '<div class="vd-card-head"><span>Animal Blood Pool</span></div>';
+    h += `<div class="vd-vitae-count">${vesselTotal} vitae drawn</div>`;
+    h += '</div></div>';
+  } else {
+    h += '<div class="feeding-vessels-grid">';
+    vessels.forEach((v, i) => { h += renderVesselCard(`Vessel ${i + 1}`, v); });
+    h += '</div>';
+  }
+  if (vessels.length) {
+    h += `<div class="vd-summary">Total Vitae: <strong>${vesselTotal}</strong></div>`;
+    h += '<div class="fvc-alloc-badge">\u2713 Allocation recorded in the downtime form</div>';
+  }
+  h += '</div>';
+
+  if (isST) {
+    h += renderStConfirmPanel({
+      stDefault: vesselTotal,
+      aggHealed: f.aggHealed,
+      formSourced: true,
+    });
+  }
+  return h;
 }
 
 function render() {
@@ -631,6 +1359,13 @@ function render() {
   const isST = isSTRole();
   let h = '<div class="feeding-wrap">';
   h += '<h3 class="feeding-title">Feeding: The Hunt</h3>';
+
+  // ── STANDING TALLY (Story 12.3) ──
+  // Deliberately outside every state branch below: it is standing information
+  // about the character, valid whether they have declared a method, already
+  // rolled here, or rolled in the downtime form. Skipped only while loading,
+  // when there is nothing fetched to report against.
+  if (feedingState !== 'loading') h += renderInfluenceWillpowerTally();
 
   // ── LOADING ──
   if (feedingState === 'loading') {
@@ -747,16 +1482,11 @@ function render() {
       h += `<span class="feeding-pool-breakdown">${esc(successBreakdown)}</span>`;
     }
 
-    h += '<div class="feeding-dice-row">';
-    for (const col of cols) {
-      for (const d of [col.r, ...col.ch]) {
-        let cls = 'feed-die';
-        if (d.s) cls += ' fd-s';
-        if (d.v === 1) cls += ' fd-1';
-        h += `<span class="${cls}">${d.v}</span>`;
-      }
-    }
-    h += '</div>';
+    // Story 12.4: same treatment as the form-sourced state above. This roll's
+    // `cols` are ALREADY column-shaped ({ r, ch }), so no regrouping is needed -
+    // the old flat loop was throwing that structure away. No chance-die concept
+    // exists on this path, so the hit test is the plain one.
+    h += renderDiceCols(cols, v => v >= 8);
 
     // ── Vitae breakdown card ──
     h += renderVitaeTallyCard(vitateTally, vessels);
@@ -768,15 +1498,34 @@ function render() {
     } else {
       const bonusVitae = vitateTally?.total_bonus ?? 0;
       const allocated = vitaeAllocation && vitaeAllocation.length === vessels;
+      // \u2500\u2500 Story 12.4, AC 2: THE INTERACTION-VS-STYLE DECISION \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+      // DECIDED: port the STYLE, keep the control type. The already-allocated
+      // (read-only) half becomes TM Story's real box strip, because a read-out
+      // has no interaction to preserve; the still-editable half keeps TM Game's
+      // own <select>, recomposed onto the same .vd-card chrome.
+      //
+      // Why, having read TM Story's own vessel-drain JS rather than guessing
+      // from its CSS (public/js/downtime-form/sections/feeding.js:793-834): its
+      // .vd-box IS genuinely click-driven, and with semantics a <select> does
+      // not have - seven buttons per vessel, clicking box N sets the draw to N,
+      // clicking the box that is already the top of the fill sets it to N-1.
+      // Porting that interaction is NOT cheap here, because TM Game's editable
+      // path carries a gate TM Story's has no equivalent of: `allFilled` in
+      // updateVesselUI() below only enables #fvc-confirm once EVERY vessel has a
+      // value, and `doConfirmAllocation` refuses a NaN. A box strip has no
+      // "unset" state distinguishable from "set to 0" - TM Story never needs
+      // one, having no confirm gate at all - so porting the interaction would
+      // mean inventing that distinction, i.e. changing what the control does.
+      // That is precisely what [[feedback_port-faithfully-not-redesign]]
+      // ("colour/type/spacing/component only, never layout or control choice")
+      // and this story's own "err toward the narrower reading" rule out.
       h += `<div class="feeding-vessels-grid" id="feeding-vessels-grid">`;
       for (let i = 0; i < vessels; i++) {
-        h += `<div class="feeding-vessel-card" data-vessel-idx="${i}">`;
-        h += `<span class="fvc-label">Vessel ${i + 1}</span>`;
         if (allocated) {
-          const sv = vitaeAllocation[i];
-          h += `<span class="fvc-val">${sv} vitae</span>`;
-          h += `<span class="fvc-consequence ${fvcConseqClass(sv)}">${fvcConseqText(sv)}</span>`;
+          h += renderVesselCard(`Vessel ${i + 1}`, vitaeAllocation[i]);
         } else {
+          h += `<div class="vd-card" data-vessel-idx="${i}">`;
+          h += `<div class="vd-card-head"><span>Vessel ${i + 1}</span><span class="vd-tier" id="fvc-con-${i}"></span></div>`;
           h += `<select class="fvc-select" id="fvc-sel-${i}" data-vessel-idx="${i}">`;
           h += '<option value="">\u2014</option>';
           h += '<option value="1">1 vitae \u2014 Safe</option>';
@@ -787,25 +1536,25 @@ function render() {
           h += '<option value="6">6 vitae \u2014 Critical (near death)</option>';
           h += '<option value="7">7 vitae \u2014 Fatal</option>';
           h += '</select>';
-          h += `<span class="fvc-consequence" id="fvc-con-${i}"></span>`;
+          h += `<div class="vd-vitae-count" id="fvc-count-${i}">Not yet allocated</div>`;
+          h += '</div>';
         }
-        h += '</div>';
       }
       h += '</div>';
       if (allocated) {
         const vesselTotal = vitaeAllocation.reduce((a, b) => a + b, 0);
         const grandTotal  = vesselTotal + (vitateTally?.total_bonus ?? 0);
         if (vitateTally?.total_bonus) {
-          h += `<div class="fvc-total">Vessel vitae: <strong>${vesselTotal}</strong> + Bonus: <strong>+${vitateTally.total_bonus}</strong> = <strong>${grandTotal}</strong> total</div>`;
+          h += `<div class="vd-summary">Vessel vitae: <strong>${vesselTotal}</strong> + Bonus: <strong>+${vitateTally.total_bonus}</strong> = <strong>${grandTotal}</strong> total</div>`;
         } else {
-          h += `<div class="fvc-total">Total Vitae: <strong>${vesselTotal}</strong></div>`;
+          h += `<div class="vd-summary">Total Vitae: <strong>${vesselTotal}</strong></div>`;
         }
         h += '<div class="fvc-alloc-badge">\u2713 Allocation recorded</div>';
       } else {
         if (bonusVitae) {
-          h += `<div class="fvc-total">Vessel vitae: <span id="fvc-total-val">0</span> + Bonus: <strong>+${bonusVitae}</strong> = <span id="fvc-grand-val">${bonusVitae}</span> total</div>`;
+          h += `<div class="vd-summary">Vessel vitae: <span id="fvc-total-val">0</span> + Bonus: <strong>+${bonusVitae}</strong> = <span id="fvc-grand-val">${bonusVitae}</span> total</div>`;
         } else {
-          h += `<div class="fvc-total">Total Vitae: <span id="fvc-total-val">0</span></div>`;
+          h += `<div class="vd-summary">Total Vitae: <span id="fvc-total-val">0</span></div>`;
         }
         h += `<p class="feeding-overfeed-warn">Draining beyond safe vitae (${safeVitae}) risks a Humanity check.</p>`;
         h += '<button id="fvc-confirm" class="qf-btn qf-btn-submit" disabled>Confirm Allocation</button>';
@@ -820,49 +1569,13 @@ function render() {
         ? vitaeAllocation.reduce((a, b) => a + b, 0)
         : safeVitae;
       const stBonus = vitateTally?.total_bonus ?? 0;
-      const stDefault = stVesselTotal + stBonus;
-      const charId = String(currentChar._id);
-      const confirmed = _stConfirmed[charId];
-      const vitaeMax = calcVitaeMax(currentChar);
-      const infMax   = calcTotalInfluence(currentChar);
-      h += `<div class="feed-st-confirm">`;
-      if (confirmed) {
-        const vitaeStr = confirmed.vitaeMax != null
-          ? `Vitae ${confirmed.vitae}/${confirmed.vitaeMax}`
-          : `Vitae \u2192 ${confirmed.vitae}`;
-        const infStr = confirmed.infAfter != null && confirmed.infMax != null
-          ? `Inf ${confirmed.infAfter}/${confirmed.infMax}`
-          : confirmed.infSpent > 0 ? `Inf \u2212${confirmed.infSpent}` : null;
-        let rec = vitaeStr;
-        if (infStr) rec += ` \u2002|\u2002 ${infStr}`;
-        h += `<div class="feed-confirmed-record">\u2713 Feed confirmed \u2014 ${rec}</div>`;
-        h += `<button class="feed-reconfirm-btn" id="feed-reconfirm-btn">Edit</button>`;
-      } else {
-        // Vitae row
-        h += `<div class="feed-st-row">`;
-        h += `<div class="feed-st-row-lbl">Vitae Gained</div>`;
-        h += `<div class="feed-st-row-ctrl">`;
-        h += `<button class="feed-adj" id="feed-confirm-adj-down">\u2212</button>`;
-        h += `<span class="feed-confirm-val" id="feed-confirm-n" data-vit-max="${vitaeMax}">${stDefault}</span>`;
-        h += `<button class="feed-adj" id="feed-confirm-adj-up">+</button>`;
-        h += `</div>`;
-        h += `<div class="feed-st-row-max">/ ${vitaeMax}</div>`;
-        h += `</div>`;
-        // Influence row
-        h += `<div class="feed-st-row">`;
-        h += `<div class="feed-st-row-lbl">Influence Remaining</div>`;
-        h += `<div class="feed-st-row-ctrl">`;
-        h += `<button class="feed-adj" id="feed-inf-adj-down">\u2212</button>`;
-        const _curInf = trackerRead(String(currentChar._id))?.inf ?? infMax;
-        h += `<span class="feed-inf-val" id="feed-inf-spent" data-inf-max="${infMax}">${_curInf}</span>`;
-        h += `<button class="feed-adj" id="feed-inf-adj-up">+</button>`;
-        h += `</div>`;
-        h += `<div class="feed-st-row-max">/ ${infMax}</div>`;
-        h += `</div>`;
-        h += `<button class="feed-confirm-btn" id="feed-confirm-btn">Confirm Feed</button>`;
-      }
-      h += `</div>`;
+      h += renderStConfirmPanel({ stDefault: stVesselTotal + stBonus });
     }
+  }
+
+  // ── ROLLED IN THE DOWNTIME FORM (TM Story, Epic 12 Story 12.2) ──
+  if (feedingState === 'rolled-from-form' && storyFeeding) {
+    h += renderFormSourcedRoll(isST);
   }
 
   // ── ST OVERRIDE PANEL ──
@@ -876,6 +1589,15 @@ function render() {
       h += '<div class="feeding-st-override">';
       h += '<span class="feeding-st-label">ST Override</span>';
       h += '<button id="feeding-reroll-btn" class="feeding-roll-btn">Reset Roll (ST)</button>';
+      h += '</div>';
+    } else if (feedingState === 'rolled-from-form') {
+      // Story 12.2, AC 2: deliberately NOT a Reset Roll button. Every existing
+      // ST override on this tab writes to tm_game.downtime_submissions, and a
+      // form-sourced roll does not live there - TM Game holds no write path to
+      // tm_story at all, so a button here could only no-op or throw.
+      h += '<div class="feeding-st-override">';
+      h += '<span class="feeding-st-label">ST Override</span>';
+      h += '<p class="feeding-state-detail">This roll was made in the downtime form and cannot be reset from here. Corrections happen in the TM Story downtime form itself, or through the downtime-processing scripts.</p>';
       h += '</div>';
     }
   }
@@ -982,25 +1704,92 @@ function wireEvents() {
   });
   container.querySelector('#feed-confirm-btn')?.addEventListener('click', async () => {
     if (!currentChar) return;
-    const charId = String(currentChar._id);
-    const n = parseInt(container.querySelector('#feed-confirm-n')?.textContent) || 0;
+    // Review fix (Codex, external, 12.2 Medium/idempotency): the DOM `disabled`
+    // flag alone does not stop a second handler invocation racing the first
+    // past the check-then-set below, so the guard is module state, set before
+    // anything is read and cleared only when the write has settled.
+    if (_confirmInFlight) return;
+    // And fail closed: if the live tracker read failed, the real Influence and
+    // Aggravated counts are unknown. The panel does not render a confirm
+    // control in that case; this is the second lock on the same door.
+    const ts = trackerFigures();
+    if (!ts) return;
+    _confirmInFlight = true;
+    // Review fix (Codex, external, third round, Medium): everything this write
+    // belongs to is SNAPSHOTTED before the await. The ST can switch character,
+    // or the active cycle can change, while the PUT is in flight; when the
+    // response then landed, the handler merged character A's body into the
+    // now-current `trackerDoc` and re-rendered the now-current container, so
+    // character B displayed A's Influence and A's aggravated marker - and the
+    // confirmation record was filed under whatever cycle was active by then,
+    // hiding the new cycle's own confirm controls. The write itself is still a
+    // success in that case (it reached the server for the right character); it
+    // simply must not be applied to a view it was never about.
+    const charSnapshot  = currentChar;
+    const paneSnapshot  = container;
+    const cycleSnapshot = activeCycleId;
+    const isStillCurrent = () =>
+      currentChar === charSnapshot && container === paneSnapshot && activeCycleId === cycleSnapshot;
+    const charId = String(charSnapshot._id);
+    const n = parseInt(paneSnapshot.querySelector('#feed-confirm-n')?.textContent) || 0;
 
-    const btn = container.querySelector('#feed-confirm-btn');
+    const btn = paneSnapshot.querySelector('#feed-confirm-btn');
     if (btn) { btn.textContent = 'Saving\u2026'; btn.disabled = true; }
 
-    const infEl = container.querySelector('#feed-inf-spent');
-    const vitaeMax = calcVitaeMax(currentChar);
-    const infMax   = calcTotalInfluence(currentChar);
+    const infEl = paneSnapshot.querySelector('#feed-inf-spent');
+    const vitaeMax = calcVitaeMax(charSnapshot);
+    const infMax   = calcTotalInfluence(charSnapshot);
     // Stepper value is the NEW remaining influence (starts at max, ticked down)
     const infAfter = infEl ? Math.max(0, parseInt(infEl.textContent) || 0) : infMax;
     const infSpent = infMax - infAfter;
 
+    // Story 12.2 (AC 3/AC 4): a downtime-form roll's own aggHealed rides THIS
+    // write, not a second one. #feed-agg-n is rendered only when there is a
+    // real, not-yet-applied figure for this cycle (renderStConfirmPanel), so
+    // reading the amount off the DOM is also the idempotency guard: an
+    // already-applied cycle, and every TM-Game-sourced roll, has no element to
+    // read and takes the untouched vitae+influence path below.
+    const aggEl = paneSnapshot.querySelector('#feed-agg-n');
+    const aggHealed = aggEl ? Math.max(0, parseInt(aggEl.dataset.aggHealed, 10) || 0) : 0;
+    const body = { vitae: n, influence: infAfter };
+    let newAgg = null;
+    if (aggHealed > 0 && cycleSnapshot && ts.marker !== cycleSnapshot) {
+      // Review fix (Codex, external, 12.2 High): the LIVE tracker document,
+      // never tracker.js's cache. That cache seeds `aggravated: 0` for any
+      // character nothing has loaded, and this tab has never loaded one - so a
+      // character carrying 3 Aggravated with `aggHealed: 2` computed and wrote
+      // `aggravated: 0`, healing all three. `trackerFigures()` returns a figure
+      // only when the live read genuinely succeeded or genuinely 404'd.
+      newAgg = Math.max(0, ts.aggravated - aggHealed);
+      body.aggravated = newAgg;
+      body[AGG_HEALED_MARKER] = cycleSnapshot;
+    }
+
     // Write vitae and influence to API — single source of truth for tracker state
     try {
-      await apiPut('/api/tracker_state/' + charId, { vitae: n, influence: infAfter });
+      await apiPut('/api/tracker_state/' + charId, body);
+      const stillCurrent = isStillCurrent();
+      // `trackerDoc`/`trackerLoad`/`render()` are all GLOBAL VIEW state: they
+      // describe whatever the tab is showing right now. Touch them only when
+      // that is still this write's own character and cycle. Everything below
+      // this branch is keyed by character id (or by the snapshotted cycle) and
+      // is therefore correct either way - which is what stops the response
+      // being lost when the ST has navigated on.
+      if (stillCurrent) {
+        // Bring this tab's own live copy up to what was just written -
+        // including the marker, so the re-render below shows "already applied"
+        // rather than re-offering the healing, and including the promotion
+        // from 'absent' to 'ok' (a character with no tracker document now has
+        // one).
+        trackerDoc = { ...(trackerDoc || {}), ...body };
+        trackerLoad = 'ok';
+      }
       // Keep tracker.js in-memory cache in sync so the tracker card re-renders correctly
       const _raw = trackerReadRaw(charId);
-      if (_raw) _raw.inf = infAfter;
+      if (_raw) {
+        _raw.inf = infAfter;
+        if (newAgg != null) _raw.aggravated = newAgg;
+      }
       // vitae_confirmed used by trackerAdj to clear confirmed marker on manual ST override
       try {
         const key = 'tm_tracker_local_' + charId;
@@ -1009,21 +1798,28 @@ function wireEvents() {
         localStorage.setItem(key, JSON.stringify(loc));
       } catch { /* ignore */ }
       const record = { vitae: n, vitaeMax, infSpent, infAfter, infMax };
-      _stConfirmed[charId] = record;
-      render();
+      if (aggHealed > 0) record.aggHealed = aggHealed;
+      // The SNAPSHOTTED cycle, explicitly: a confirmation begun in cycle 1 is a
+      // record about cycle 1 even if cycle 2 opened while it was in flight.
+      // Filed under the live `activeCycleId` it hid cycle 2's own confirm
+      // controls and skipped that cycle's aggHealed.
+      _stConfirmed[stConfirmKey(charId, cycleSnapshot)] = record;
+      if (stillCurrent) render();
     } catch (err) {
       console.error('Tracker feed confirm failed:', err);
-      if (btn) {
+      if (btn && isStillCurrent()) {
         btn.textContent = 'Save failed \u2014 retry';
         btn.classList.add('is-error');
         btn.disabled = false;
       }
+    } finally {
+      _confirmInFlight = false;
     }
   });
 
   container.querySelector('#feed-reconfirm-btn')?.addEventListener('click', () => {
     if (!currentChar) return;
-    delete _stConfirmed[String(currentChar._id)];
+    delete _stConfirmed[stConfirmKey(String(currentChar._id))];
     render();
   });
 
@@ -1045,14 +1841,21 @@ function updateVesselUI() {
   let total = 0, allFilled = true;
   sels.forEach(sel => {
     const idx = sel.dataset.vesselIdx;
+    // Story 12.4: the live consequence badge is now the card head's own
+    // .vd-tier, and the card carries a .vd-vitae-count line the way the form's
+    // read-only cards do. Same two states as before (a value, or nothing chosen
+    // yet) and the same `allFilled` gate - only the elements changed.
     const conEl = container.querySelector(`#fvc-con-${idx}`);
+    const cntEl = container.querySelector(`#fvc-count-${idx}`);
     if (sel.value) {
       const v = parseInt(sel.value, 10);
       total += v;
-      if (conEl) { conEl.textContent = fvcConseqText(v); conEl.className = `fvc-consequence ${fvcConseqClass(v)}`; }
+      if (conEl) { conEl.textContent = fvcConseqText(v); conEl.className = `vd-tier ${fvcConseqClass(v)}`; }
+      if (cntEl) cntEl.textContent = `${v} vitae drawn`;
     } else {
       allFilled = false;
-      if (conEl) { conEl.textContent = ''; conEl.className = 'fvc-consequence'; }
+      if (conEl) { conEl.textContent = ''; conEl.className = 'vd-tier'; }
+      if (cntEl) cntEl.textContent = 'Not yet allocated';
     }
   });
   const totalEl = container.querySelector('#fvc-total-val');
@@ -1155,7 +1958,9 @@ async function loadInfluenceSpend(charId) {
       .sort((a, b) => (String(b._id) > String(a._id) ? 1 : -1))[0];
     if (!latest) { el.textContent = '0'; return; }
     const spendObj = JSON.parse(latest.responses.influence_spend || '{}');
-    const total = Object.values(spendObj).reduce((sum, v) => sum + Math.abs(Number(v) || 0), 0);
+    // Same strict gate as every other coercion in this file: a `true` in the
+    // parsed spend map is not a spend of 1.
+    const total = Object.values(spendObj).reduce((sum, v) => sum + Math.abs(_strictNum(v) ?? 0), 0);
     el.textContent = String(total);
   } catch {
     el.textContent = '0';

@@ -626,6 +626,13 @@ body.desktop-mode .sh-powers-grid > .sh-sec{break-inside:avoid;}
 .feed-push-row b{color:var(--err3-a8);}
 .feed-reset-btn{width:100%;height:44px;background:transparent;border:1px solid var(--bdr2);color:var(--txt3);font-family:var(--fl);font-size:var(--fs-floor-micro);letter-spacing:.14em;text-transform:uppercase;cursor:pointer;-webkit-tap-highlight-color:transparent;}
 .feed-dice-row{display:flex;flex-wrap:wrap;gap:5px;padding:8px 14px 4px;}
+/* Story 12.4: .feed-die/.fd-s/.fd-1 lost their last consumer when
+   feeding-tab.js moved onto the downtime form's own .feeding-die
+   (components.css). Left in place rather than deleted, because they sit inside
+   an ALREADY-dead block - .feed-dice-row/.feed-suc-row/.feed-push-row around
+   them have no consumer in public/ either - and pruning three rules out of a
+   dead seven would be arbitrary. The root-level legacy index.html carries its
+   own inline copy and links no stylesheet from css/, so it is unaffected. */
 .feed-die{display:inline-flex;align-items:center;justify-content:center;width:32px;height:32px;border:1px solid var(--bdr);background:var(--surf2);font-family:var(--fl);font-size:0.8125rem;color:var(--txt3);}
 .feed-die.fd-s{border-color:var(--gold);color:var(--gold2);background:var(--gold-a10);}
 .feed-die.fd-1{border-color:var(--crim-a50);color:var(--err6);}
@@ -1589,8 +1596,14 @@ details.city-section[open] > .city-section-hd::before { transform: rotate(90deg)
 
 /* ── ST Roll Result ── */
 
-/* ── Vitae Tally Card (player portal) ── */
-.fvt-pos .fvt-val { color: var(--green-dk); }
+/* ── Vitae Tally Card (player portal) ──
+   Story 12.4: `.fvt-pos .fvt-val` removed - the card is now .feed-ledger /
+   .feed-ledger-row.feed-ledger-pos (TM Story's Vitae Projection ledger, ported
+   into components.css under names of its own, because TM Story's own
+   `.dt-vitae-*` names are taken here by the downtime form's unrelated Vitae
+   Projection panel), whose positive rows take --good. That token is now declared
+   in BOTH of TM Game's palettes (theme.css), so no parchment-only override is
+   needed here the way --green-dk needed one. */
 
 .fvc-alloc-badge { display: inline-block; margin-top: 12px; padding: 6px 14px; background: var(--surf); border: 1px solid var(--green-dk); border-radius: var(--radius-md); color: var(--green-dk); font-size: 0.75rem; font-family: var(--fl); text-transform: uppercase; letter-spacing: .08em; }
 

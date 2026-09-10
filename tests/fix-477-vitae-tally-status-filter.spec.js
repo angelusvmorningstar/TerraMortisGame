@@ -97,6 +97,24 @@ async function setupRoutes(page, submission) {
   }, PLAYER_USER);
 }
 
+/**
+ * The Vitae Sources ledger card.
+ *
+ * Story 12.4 recomposed this card onto the downtime form's ledger component:
+ * `.fvt-card`/`.fvt-row`/`.fvt-val` are gone, and the tab now renders TWO
+ * ledger cards - Story 12.3's standing "Influence and Willpower" tally and this
+ * one - so `.feed-ledger` alone is ambiguous and is filtered by title here.
+ * (The class prefix is `feed-ledger`, not TM Story's own `dt-vitae-*`, because
+ * those names belong to the downtime form's unrelated Vitae Projection panel in
+ * this repo - see components.css.)
+ */
+const vitaeCard = (sandbox) => sandbox.locator('.feed-ledger', { hasText: 'Vitae Sources' });
+
+/** One ledger row by its label, and that row's value cell (the second span). */
+const ledgerRow = (sandbox, label) =>
+  vitaeCard(sandbox).locator('.feed-ledger-row', { hasText: label });
+const ledgerVal = (row) => row.locator('span').last();
+
 async function openFeedingTabSandbox(page, submission) {
   const char = buildChar();
   await setupRoutes(page, submission);
@@ -124,12 +142,12 @@ test.describe('fix.477 — computeVitateTally status filter whitelist', () => {
     const sub = buildSub({ academy: 'feeding_rights' });
     const sandbox = await openFeedingTabSandbox(page, sub);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
-    await expect(sandbox.locator('.fvt-card')).toContainText('Academy');
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
-    const ambRow1 = sandbox.locator('.fvt-card .fvt-row', { hasText: 'Academy' });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toContainText('Academy');
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
+    const ambRow1 = ledgerRow(sandbox, 'Academy');
     await expect(ambRow1).toBeVisible();
-    await expect(ambRow1.locator('.fvt-val')).toHaveText('+3');
+    await expect(ledgerVal(ambRow1)).toHaveText('+3');
   });
 
   // AC2: current term "poaching"
@@ -137,10 +155,10 @@ test.describe('fix.477 — computeVitateTally status filter whitelist', () => {
     const sub = buildSub({ harbour: 'poaching' });
     const sandbox = await openFeedingTabSandbox(page, sub);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
-    await expect(sandbox.locator('.fvt-card')).toContainText('Harbour');
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
-    await expect(sandbox.locator('.fvt-card .fvt-val', { hasText: '-2' })).toBeVisible();
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toContainText('Harbour');
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
+    await expect(ledgerVal(ledgerRow(sandbox, 'Harbour'))).toHaveText('-2');
   });
 
   // AC3: legacy term "resident" — old submissions before the term was retired
@@ -148,12 +166,12 @@ test.describe('fix.477 — computeVitateTally status filter whitelist', () => {
     const sub = buildSub({ northshore: 'resident' });
     const sandbox = await openFeedingTabSandbox(page, sub);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
-    await expect(sandbox.locator('.fvt-card')).toContainText('North Shore');
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
-    const ambRow3 = sandbox.locator('.fvt-card .fvt-row', { hasText: 'North Shore' });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toContainText('North Shore');
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
+    const ambRow3 = ledgerRow(sandbox, 'North Shore');
     await expect(ambRow3).toBeVisible();
-    await expect(ambRow3.locator('.fvt-val')).toHaveText('+2');
+    await expect(ledgerVal(ambRow3)).toHaveText('+2');
   });
 
   // AC4: legacy term "poacher" — old submissions before the term was retired
@@ -161,12 +179,12 @@ test.describe('fix.477 — computeVitateTally status filter whitelist', () => {
     const sub = buildSub({ secondcity: 'poacher' });
     const sandbox = await openFeedingTabSandbox(page, sub);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
-    await expect(sandbox.locator('.fvt-card')).toContainText('Second City');
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
-    const ambRow4 = sandbox.locator('.fvt-card .fvt-row', { hasText: 'Second City' });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toContainText('Second City');
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
+    const ambRow4 = ledgerRow(sandbox, 'Second City');
     await expect(ambRow4).toBeVisible();
-    await expect(ambRow4.locator('.fvt-val')).toHaveText('+2');
+    await expect(ledgerVal(ambRow4)).toHaveText('+2');
   });
 
   // AC5: all territories "none" → Barrens default preserved
@@ -177,10 +195,10 @@ test.describe('fix.477 — computeVitateTally status filter whitelist', () => {
     });
     const sandbox = await openFeedingTabSandbox(page, sub);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
-    const ambRow = sandbox.locator('.fvt-card .fvt-row', { hasText: 'Barrens' });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
+    const ambRow = ledgerRow(sandbox, 'Barrens');
     await expect(ambRow).toBeVisible();
-    await expect(ambRow.locator('.fvt-val')).toHaveText('-4');
+    await expect(ledgerVal(ambRow)).toHaveText('-4');
   });
 
   // QA (Quinn): multi-territory — the tally picks the BEST ambience among all declared
@@ -190,11 +208,11 @@ test.describe('fix.477 — computeVitateTally status filter whitelist', () => {
     const sub = buildSub({ academy: 'feeding_rights', harbour: 'poaching', dockyards: 'feeding_rights' });
     const sandbox = await openFeedingTabSandbox(page, sub);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
-    await expect(sandbox.locator('.fvt-card')).toContainText('Academy'); // best of +3 / -2 / 0
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
-    const ambRowBest = sandbox.locator('.fvt-card .fvt-row', { hasText: 'Academy' });
-    await expect(ambRowBest.locator('.fvt-val')).toHaveText('+3');
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toContainText('Academy'); // best of +3 / -2 / 0
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
+    const ambRowBest = ledgerRow(sandbox, 'Academy');
+    await expect(ledgerVal(ambRowBest)).toHaveText('+3');
   });
 
 });

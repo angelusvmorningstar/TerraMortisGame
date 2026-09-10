@@ -193,6 +193,30 @@
   --warn-dk:#7a5c00;--warn-dk-bg:rgba(122,92,0,.12);
   --warn-orange:#8b3d00;--warn-orange-bg:rgba(139,61,0,.10);--warn-orange-bdr:rgba(139,61,0,.40);
 
+  /* ── FEEDING/DOWNTIME SHARED TOKENS (Story 12.4, ported from TM Story) ──────
+     GROUNDING CORRECTION: Story 12.4's own spec asserts that --good/--warn
+     "all resolve to the same values in both apps". They did not. Before this
+     block TM Game declared NO --good, --warn, --paper or --crim-readable at
+     all, in either palette - verified by grep across public/css/*.css, and
+     corroborated by TM Story's own downtime-form.css:842-844, which says in
+     as many words that these tokens exist there "unlike the mockup's own note
+     about TM Game's separate, still-missing token set."
+
+     So this is the missing half of the shared layer being landed, NOT a new
+     palette decision: every value below is copied verbatim from TM Story's
+     public/css/theme.css (:root 45/91, [data-theme="dark"] 249/289/294),
+     where --good/--warn are themselves design-locked against
+     specs/mockups/downtime-form/index.html:104,115 and were chosen over the
+     Suite's own --result-succ precisely because --result-succ (#2e7d32) fails
+     WCAG AA at 12-12.5px on these surfaces. Substituting TM Game's --green3 or
+     --warn-dk here instead would have made the recompose LOOK different from
+     the form it is supposed to match, which is the whole point of the story.
+
+     Deliberately NOT aliases (--good:var(--green3) etc): an alias would drift
+     the two apps apart the moment either side's alias target moved. */
+  --good:#2E6B34;--warn:#8B5A00;
+  --paper:#FBF8F0;  /* a sheet, a touch brighter than the desk */
+
   /* Reading pane — warm parchment surfaces (questionnaires, player portal, dossiers).
      Used in both light (parchment tokens below) and dark (overrides at bottom of file). */
   --rp-bg:#F0E6D4;--rp-surf:#FFF8EE;--rp-surf2:#E8DCC8;
@@ -288,6 +312,17 @@
 [data-theme="dark"] {
   /* Backgrounds & surfaces */
   --bg:#0D0B09;--surf:#161210;--surf2:#1E1A16;--surf3:#252018;
+  /* Story 12.4, found by MEASURING the rendered port against TM Story's own
+     (headless Chromium, computed styles, both themes) rather than by reading
+     it: --surf1 was declared in :root above and NEVER overridden here, so in
+     dark mode it resolved to the LIGHT parchment #E9E2D1 and every panel using
+     it rendered as a bright cream slab on a near-black page. Value verbatim
+     from TM Story's own dark block (theme.css:248), which has always carried
+     it. NOTE, disclosed rather than buried: this also corrects 5 pre-existing
+     var(--surf1) rules in components.css (and 35 in admin-layout.css, which is
+     parchment-primary so was far less exposed) that had the same defect before
+     this story existed. */
+  --surf1:#1a1512;
   --surf-a6:rgba(22,18,16,.6);--surf2-a8:rgba(30,26,22,.8);
   --overlay:rgba(0,0,0,.65);--overlay2:rgba(0,0,0,.78);
 
@@ -322,6 +357,20 @@
 
   /* Text */
   --txt:#E8E0D0;--txt2:#C4B49A;--txt3:#8A7A6A;
+
+  /* ── FEEDING/DOWNTIME SHARED TOKENS (Story 12.4) ──────────────────────────
+     Dark half of the block added to :root above. Verbatim from TM Story's own
+     theme.css (249, 289, 294). --crim-readable exists in the DARK palette only
+     in TM Story too: it is the readable stand-in for --crim (#8B0000) against a
+     dark surface, and TM Story's downtime-form.css uses it in exactly three
+     dark-mode overrides (.dt-vitae-cost - carried here as .feed-ledger-cost,
+     renamed off a name collision, see components.css - .vd-tier.vd-serious and
+     .vd-bp-summary).
+     TM Game's Suite defaults to dark (index.html:27), so those three overrides
+     matter MORE here than they do there, not less. */
+  --good:#5A9A5F;--warn:#C9A24A;
+  --paper:#17130F;  /* a sheet, a touch lighter than the desk */
+  --crim-readable:#E08080;
 
   /* Status: success / green */
   --green:#5A8A5A;--green2:#7EC8A0;--green3:#8bc878;--green4:#A8D8B4;

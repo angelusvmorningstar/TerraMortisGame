@@ -109,6 +109,24 @@ async function setupRoutes(page, { submission = null, territories = [], char = n
   }, PLAYER_USER);
 }
 
+/**
+ * The Vitae Sources ledger card.
+ *
+ * Story 12.4 recomposed this card onto the downtime form's ledger component:
+ * `.fvt-card`/`.fvt-row`/`.fvt-val` are gone, and the tab now renders TWO
+ * ledger cards - Story 12.3's standing "Influence and Willpower" tally and this
+ * one - so `.feed-ledger` alone is ambiguous and is filtered by title here.
+ * (The class prefix is `feed-ledger`, not TM Story's own `dt-vitae-*`, because
+ * those names belong to the downtime form's unrelated Vitae Projection panel in
+ * this repo - see components.css.)
+ */
+const vitaeCard = (sandbox) => sandbox.locator('.feed-ledger', { hasText: 'Vitae Sources' });
+
+/** One ledger row by its label, and that row's value cell (the second span). */
+const ledgerRow = (sandbox, label) =>
+  vitaeCard(sandbox).locator('.feed-ledger-row', { hasText: label });
+const ledgerVal = (row) => row.locator('span').last();
+
 async function openFeedingTabSandbox(page, char) {
   await page.goto('/');
   await page.waitForSelector('#app', { state: 'visible', timeout: 15000 });
@@ -283,11 +301,11 @@ test.describe('fix.475 — Bug 3: vitae tally resolves named territory correctly
     const sandbox = await openFeedingTabSandbox(page, char);
 
     // Feeding state 'ready' — vitae tally card renders
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
 
     // Must show Academy (+3), not Barrens (−4)
-    await expect(sandbox.locator('.fvt-card')).toContainText('The Academy');
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
+    await expect(vitaeCard(sandbox)).toContainText('The Academy');
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
   });
 
   // AC7: empty feeding_territories → Barrens −4 default preserved (no regression)
@@ -304,12 +322,12 @@ test.describe('fix.475 — Bug 3: vitae tally resolves named territory correctly
     await setupRoutes(page, { submission: sub, char });
     const sandbox = await openFeedingTabSandbox(page, char);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
 
     // Ambience row must show Barrens (−4)
-    const ambRow = sandbox.locator('.fvt-card .fvt-row', { hasText: 'Barrens' });
+    const ambRow = ledgerRow(sandbox, 'Barrens');
     await expect(ambRow).toBeVisible();
-    await expect(ambRow.locator('.fvt-val')).toHaveText('-4');
+    await expect(ledgerVal(ambRow)).toHaveText('-4');
   });
 
   // AC6: persisted feeding_vitae_tally is used as-is — computeVitateTally not called
@@ -336,12 +354,12 @@ test.describe('fix.475 — Bug 3: vitae tally resolves named territory correctly
     await setupRoutes(page, { submission: sub, char });
     const sandbox = await openFeedingTabSandbox(page, char);
 
-    await expect(sandbox.locator('.fvt-card')).toBeVisible({ timeout: 8000 });
+    await expect(vitaeCard(sandbox)).toBeVisible({ timeout: 8000 });
 
     // Persisted tally says The Harbour (−2), not Barrens (−4)
-    await expect(sandbox.locator('.fvt-card')).toContainText('The Harbour');
-    await expect(sandbox.locator('.fvt-card .fvt-val', { hasText: '-2' })).toBeVisible();
-    await expect(sandbox.locator('.fvt-card')).not.toContainText('Barrens');
+    await expect(vitaeCard(sandbox)).toContainText('The Harbour');
+    await expect(ledgerVal(ledgerRow(sandbox, 'The Harbour'))).toHaveText('-2');
+    await expect(vitaeCard(sandbox)).not.toContainText('Barrens');
   });
 
 });
