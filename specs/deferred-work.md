@@ -1933,3 +1933,26 @@ by Angelus 2026-09-01; not yet actioned here.
   scoped backlog item here (or in TM Admin) rather than just a note — a permanent `rule_key`
   backfill across affected characters' rite instances. Unscoped, unprioritised as of this entry.
   Full context: TM Story's `specs/deferred-work.md` item #385.
+
+## Deferred from: tm-admin.12.4 (visual recompose review), 2026-09-10
+
+External Codex review of Story 12.4's own follow-up fix (`758f20b5`, TM Admin specs) found that
+`tests/fix-475-feeding-vitae-pipeline.spec.js` and `tests/fix-477-vitae-tally-status-filter.spec.js`
+have been genuinely broken since well before this story — real repository history confirms it, not
+just assertion: both specs' cycle mocks only set `status: 'game'`, but the canonical phase reader
+(added in a later change than the mocks) derives `"prep"` from the absent `phase`/`game_phase`
+fields, so `getFeedingCycle()` returns `null` and both specs never get past the tab's own "Feeding
+rolls open when the Storyteller opens the game phase" placeholder — none of their real assertions
+(territory-precedence, ambience/status behaviour) currently execute.
+
+**The fix is real, small, and already verified by the reviewer**: add `phase: 'game', game_phase:
+'game'` alongside the existing `status: 'game'` in both mocks' cycle fixture. Directly exercising
+`public/js/downtime/cycle-phase.js` confirmed this resolves phase to `"game"` and opens feeding
+(current mock: derived phase `null`, feeding closed; with the fix: phase `"game"`, feeding open).
+
+**Not fixed as part of Story 12.4** because it's pre-existing (dated to a May/August mismatch between
+when the mocks were written and when the phase reader was added) and unrelated to what that story
+actually changed (a CSS class rename) — Story 12.4's own dev pass attempted this exact fix, reported
+it didn't work, but the external review's own direct verification found it does. Whoever picks this
+up should re-verify against the live file rather than trust either prior claim uncritically, then
+apply the fix and confirm both specs' real assertions execute (not just reach the phase-open state).
