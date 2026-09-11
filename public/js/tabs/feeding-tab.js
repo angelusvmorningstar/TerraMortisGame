@@ -1,25 +1,57 @@
 /**
- * Feeding tab — one-shot feeding roll.
+ * Feeding tab — a pure client of TM Story's downtime store (Epic 12).
  *
- * If player submitted downtime: shows their declared method + calculated pool.
- * If no downtime: shows generic method selection.
- * One roll, then locked. STs can re-run.
+ * WHAT CHANGED IN STORY 12.7. This tab used to roll its own dice and persist the
+ * result to `tm_game.downtime_submissions` via `PUT /api/downtime_submissions/:id`.
+ * That collection has held nothing since Epic 8 moved downtime storage to
+ * `tm_story` — it has zero documents for Game 8 — so the save silently no-opped
+ * and every roll vanished on refresh. The tab now owns the UI and nothing else:
+ * TM Story holds the declaration, derives the real pool, rolls the dice, and
+ * stores the result, and this file reads it back and draws it.
  *
- * States: loading → ready → rolled | no_submission (generic picker)
- *                 → rolled-from-form (Epic 12: the roll already happened in TM
- *                   Story's downtime form; read-only here, never re-rollable)
+ * The decision surface is a PORT of TM Story's own downtime form, not a lookalike
+ * (Story 12.7 AC 11/13/14): the method cards, the locked pool display, the roll
+ * gate and its exact words, the vessel-drain strip and the aggravated-healing
+ * boxes all come from `TM Story/public/js/downtime-form/sections/feeding.js` and
+ * `pool-builder.js`, adapted only for this app's own character accessors.
+ *
+ * ONE THING IS DELIBERATELY ABSENT, PERMANENTLY: there is no "Something else"
+ * custom-pool card and no path to declaring one. RULED (Angelus, 2026-09-11):
+ * "the only time a player is allowed to do a custom roll is during the downtime
+ * form, as this allows STs to rule on it." The new write endpoint refuses a
+ * custom declaration outright (AC 3); this tab simply never offers it.
+ *
+ * States: loading
+ *       → story-feed        (TM Story holds this cycle: declare what is missing,
+ *                            roll, feed, heal — whatever is still outstanding)
+ *       → rolled-from-form  (the roll exists in TM Story; Story 12.2's state,
+ *                            now also carrying the vessel/heal panels when those
+ *                            are still outstanding)
+ *       → ready | rolled | no_submission | deferred
+ *                           (the residual TM-Game-sourced machine, reached only
+ *                            when TM Story cannot be read at all. It still
+ *                            DISPLAYS old-format data correctly; what it no
+ *                            longer does is write one.)
  *
  * Story 12.3 adds one thing that belongs to no state: a standing Influence +
  * Willpower tally card, rendered in every state except loading.
  */
 
 import { apiGet, apiPut, apiRaw } from '../data/api.js';
-import { fetchStoryFeeding } from '../data/story-feeding.js';
+import {
+  fetchStoryFeeding, fetchStoryFeedingTemplates, fetchStoryPrevious,
+  postStoryFeedingRoll, postStoryFeedingDeclaration,
+} from '../data/story-feeding.js';
+import {
+  conformance, feedingPoolRecall, feedingRollGate, isCustomApproach,
+  normaliseTemplates, poolLockMode, templateForMethod, vesselHarmTier,
+  violenceDefaultFor, vitaeColourClass as storyVitaeColourClass,
+} from '../data/story-feeding-rules.js';
 import { getFeedingCycle } from '../downtime/db.js';
-import { esc, displayName, hasAoE } from '../data/helpers.js';
-import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecStr, calcVitaeMax, calcWillpowerMax } from '../data/accessors.js';
+import { esc, displayName, hasAoE, isSpecs } from '../data/helpers.js';
+import { getAttrEffective as getAttrVal, skDots, skTotal, skSpecs, skSpecStr, skNineAgain, calcVitaeMax, calcWillpowerMax } from '../data/accessors.js';
 import { FEED_METHODS, TERRITORY_DATA } from './downtime-data.js';
-import { SKILLS_MENTAL } from '../data/constants.js';
+import { ALL_ATTRS, ALL_SKILLS, SKILLS_MENTAL } from '../data/constants.js';
 import { isSTRole } from '../auth/discord.js';
 import { domMeritContrib, effectiveInvictusStatus, calcTotalInfluence } from '../editor/domain.js';
 // Review fix (Codex, external, 12.2 High + 12.3 High): `trackerRead()` is no
@@ -31,22 +63,36 @@ import { domMeritContrib, effectiveInvictusStatus, calcTotalInfluence } from '..
 // (`readTrackerState` below). `trackerReadRaw` stays, but only to keep the
 // tracker card's in-memory cache in step AFTER a successful write.
 import { trackerReadRaw } from '../game/tracker.js';
-// dtlt.1: bonus successes (Stronger Than You). The local dice helpers below
-// stay — they carry this tab's configurable again-threshold, which the shared
-// engine reads from global roll state instead. Only the success RESOLUTION is
-// shared, and shared cntSuc reads the same per-die `s` flag these chains carry.
-import { resolveSuccesses, formatSuccessBreakdown } from '../shared/dice.js';
 
-// Dice math (configurable again threshold: 10 = standard, 9 = 9-again, 8 = 8-again)
-function d10() { return Math.floor(Math.random() * 10) + 1; }
-function mkDie(v, again = 10)  { return { v, s: v >= 8, x: v >= again }; }
-function mkChain(rv, again = 10) {
-  const r = mkDie(rv, again); const ch = [];
-  let l = r; while (l.x) { const c = mkDie(d10(), again); ch.push(c); l = c; }
-  return { r, ch };
-}
-function rollDice(n, again = 10) { const c = []; for (let i = 0; i < n; i++) c.push(mkChain(d10(), again)); return c; }
-function cntSuc(cols) { let s = 0; cols.forEach(col => { if (col.r.s) s++; col.ch.forEach(d => { if (d.s) s++; }); }); return s; }
+// ── Story 12.7: THIS TAB NO LONGER ROLLS DICE ────────────────────────────────
+//
+// `d10`/`mkDie`/`mkChain`/`rollDice`/`cntSuc`/`rollDiceRote` and the
+// `resolveSuccesses`/`formatSuccessBreakdown` import from `../shared/dice.js`
+// are all gone. Verified before removal (AC 6 asks explicitly): every one of
+// them was module-local to this file and reachable only from `doFeedingRoll()`.
+// Nothing is exported from here but `renderFeedingTab`, `AGG_HEALED_MARKER`,
+// `isUsableStoryRoll` and `normaliseStoryFeeding`, and no other module imports
+// this file's dice helpers.
+//
+// The roll itself is TM Story's `dice-roll.js`'s `rollPool()`, invoked
+// server-side by the new write endpoint. That is not tidiness: the data-lock
+// (finding #3) found TM Game's own roll produced a DIFFERENT, incompatible
+// result shape (`cols`/`dramaticFailure`, no `signature`/`chance`/`exceptional`),
+// so a TM-Game-computed roll pushed into `content.feeding.rollResult` would
+// either corrupt that shape or need a translation layer duplicating dice logic
+// TM Story already owns correctly.
+//
+// ONE KNOWN CONSEQUENCE, stated rather than hidden: this tab's `dtlt.1` bonus
+// successes (Stronger Than You and friends, `../shared/dice.js`) applied to a
+// TM-Game-rolled feed and do not apply to a TM-Story-rolled one, because TM
+// Story's engine has no such concept. That is a real behavioural difference,
+// and it resolves in the same direction as everything else in this epic: TM
+// Story owns the dice, so a rule that is to apply to a feeding roll has to
+// exist there.
+//
+// `diceColumns()` further down is kept and is NOT a dice roller: it is a pure
+// display regrouping of an already-rolled flat `dice` array, ported from TM
+// Story's own `diceColumns()` by Story 12.4.
 
 let currentChar = null;
 let container = null;
@@ -61,13 +107,11 @@ let poolTotal = 0;
 let poolBreakdown = '';
 let stRote  = false; // rote flag confirmed by ST in downtime processing
 let stAgain = 10;   // again threshold (8/9/10) confirmed by ST
-// Review fix (Codex, external, dtlt.1): true only when poolTotal was actually
-// built from declaredMethod's own attrs/skills (buildPool() below). An
-// ST-confirmed pool (feeding_roll.params or a parsed pool_validated size)
-// carries no reliable trait names — declaredMethod may be a stale/different
-// method the player originally submitted, not what the ST actually
-// confirmed — so bonus-success predicates must not be evaluated against it.
-let poolTraitsTrusted = false;
+// Story 12.7 removed `poolTraitsTrusted`. It existed (dtlt.1) purely to decide
+// whether this tab's own bonus-success predicates could be evaluated against
+// `declaredMethod`'s traits when it rolled its own dice. It no longer rolls any:
+// TM Story derives the pool and rolls it server-side, so there is nothing left
+// for the flag to gate.
 let rollResult = null;
 let vitaeAllocation = null; // array of ints after player confirms, or null
 let feedingRecord = null; // persisted feeding_rolls record from DB
@@ -115,6 +159,51 @@ export const AGG_HEALED_MARKER = 'feeding_agg_healed_cycle_id';
 // reload, silently skipping the new cycle's own aggHealed.
 const _stConfirmed = {};
 
+// ── Story 12.7: the story-sourced flow's own state ───────────────────────────
+// `storyFeeding` above is the NORMALISED, display-only copy used by the
+// read-only rolled view. These carry the rest of what the ported decision
+// surface needs, and they are reset per render pass alongside everything else.
+//
+// `storyFeedRaw` is `content.feeding` as TM Story really stores it (or null).
+// The declaration fields on it are what a frozen pool is read from and what a
+// roll request must echo back unchanged, so it is deliberately NOT run through
+// `normaliseStoryFeeding` (which keeps only the fields the rolled view draws).
+// Every value taken off it still goes through `esc()` at the point of use, and
+// every numeric value through the same strict coercions the rolled view uses.
+let storyFeedRaw = null;
+// The live template list (AC 12), and whether the fetch that produced it
+// actually succeeded. An empty list with `storyTemplatesOk === false` means
+// "could not reach TM Story", which is a different sentence from "TM Story
+// offers no templates" and must never be shown as the same one.
+let storyTemplates = [];
+let storyTemplatesOk = false;
+// `feedingPoolRecall()`'s offer off the previous cycle, or null.
+let storyRecall = null;
+// The player's in-progress picks. Mirrors the sub-document's own field names so
+// a roll request is a straight projection of it, never a translation.
+let feedSel = null;
+// True when TM Story already holds a genuinely declared method for this cycle:
+// the pool is frozen and no picker is ever rendered (Angelus, 2026-09-11 -
+// "choices that have already been made remain locked, and choices not made are
+// left to be completed").
+let feedFrozen = false;
+// A write is in flight. Every control the write could invalidate is disabled
+// while it is true, and it is cleared only when the request has settled.
+let feedBusy = false;
+// The last thing a write said, as `{ kind: 'error' | 'ok', text }`. Rendered
+// verbatim through `esc()` - TM Story's own refusal messages ("Custom pools can
+// only be declared in the downtime form") are the useful half of a 400.
+let feedNotice = null;
+// TM Story's own two-step commit (`sections/feeding.js`'s `state.rollConfirming`):
+// Roll -> irreversible warning -> Confirm/Cancel.
+let feedRollConfirming = false;
+// The vessel draw and the aggravated healing, while the player is still setting
+// them. Null means "not being edited" (nothing declared yet, or already
+// committed - `feedVesselsCommitted` below is what tells those apart).
+let feedVesselDraft = null;
+let feedAggDraft = 0;
+let feedVesselsCommitted = false;
+
 // `cycleId` is explicit so an in-flight write can key its own result against
 // the cycle it STARTED in (review fix, Codex, external, third round, Medium),
 // rather than whatever cycle happens to be active when the response lands.
@@ -157,7 +246,6 @@ export async function renderFeedingTab(el, char) {
   selectedMethodId = '';
   stRote  = false;
   stAgain = 10;
-  poolTraitsTrusted = false;
   responseSubId = null;
   publishedFeedingText = null;
   stRollResult = null;
@@ -168,6 +256,20 @@ export async function renderFeedingTab(el, char) {
   activeCycleId = null;
   trackerDoc = null;
   trackerLoad = null;
+  // Story 12.7: the ported flow's own state, reset with everything else so a
+  // character switch can never leave one character's picks on another's card.
+  storyFeedRaw = null;
+  storyTemplates = [];
+  storyTemplatesOk = false;
+  storyRecall = null;
+  feedSel = null;
+  feedFrozen = false;
+  feedBusy = false;
+  feedNotice = null;
+  feedRollConfirming = false;
+  feedVesselDraft = null;
+  feedAggDraft = 0;
+  feedVesselsCommitted = false;
 
   // Fetch live territory ambience from DB (used by computeVitateTally)
   let liveTerrDocs = [];
@@ -275,9 +377,57 @@ export async function renderFeedingTab(el, char) {
   // zero successes and no dice, instead of falling through to the old state
   // machine. Only a genuinely usable shape activates it now, and what it
   // activates on is the NORMALISED copy - see normaliseStoryFeeding.
-  if (storyRes?.ok && isUsableStoryRoll(storyRes.data?.feeding)) {
-    storyFeeding = normaliseStoryFeeding(storyRes.data.feeding);
+  // Story 12.7: what counts as "TM Story answered". A 2xx alone is not enough -
+  // this is a cross-origin call whose response could be anything, and a body that
+  // is not this route's own shape (`{ feeding, territory_influence,
+  // lifecycle_state, status }`) tells us nothing about whether the character has
+  // a submission. Anything else is treated exactly like an unreachable service:
+  // fall through to the residual state machine rather than declare, on no
+  // evidence, that the player has nothing on file.
+  const storyBody = (storyRes?.ok
+    && storyRes.data && typeof storyRes.data === 'object' && !Array.isArray(storyRes.data)
+    && 'feeding' in storyRes.data)
+    ? storyRes.data
+    : null;
+
+  if (storyBody && isUsableStoryRoll(storyBody.feeding)) {
+    storyFeeding = normaliseStoryFeeding(storyBody.feeding);
+    storyFeedRaw = storyBody.feeding;
     feedingState = 'rolled-from-form';
+    // Story 12.7: the roll is done, but the vessel feed and the vitae heal may
+    // not be. Those panels need the same reference data the pre-roll flow does
+    // (the template list names the method a frozen declaration stores), so the
+    // same hydration runs here too.
+    await hydrateStoryFeedingRefs(String(char._id), activeCycleId);
+    if (currentChar !== charSnapshot) return;
+    initFeedSelection();
+    mountFeedingPanes(el, char);
+    render();
+    return;
+  }
+
+  // ── Story 12.7: TM Story holds this cycle, but no roll has happened yet ─────
+  //
+  // Three real situations, all served by the SAME ported flow, which decides
+  // internally which of them it is looking at:
+  //   1. a declaration is on file (the common case, e.g. Samuel Pike) - the pool
+  //      is frozen, no picker is ever shown, and whatever is still outstanding
+  //      opens together;
+  //   2. a submission exists with no method declared (should be impossible under
+  //      the current form, handled anyway) - the full flow, template + recall
+  //      only;
+  //   3. no submission at all for this cycle (an honest 404) - same as 2.
+  //
+  // A fetch that FAILED for any other reason (network, CORS, 401, 500) is NOT
+  // one of these: the real state is unknown, so it falls through to the residual
+  // TM-Game-sourced machine below exactly as it did before this story.
+  const storyReachable = !!storyBody || storyRes?.reason === 'not-found';
+  if (storyReachable) {
+    storyFeedRaw = storyBody ? (storyBody.feeding ?? null) : null;
+    feedingState = 'story-feed';
+    await hydrateStoryFeedingRefs(String(char._id), activeCycleId);
+    if (currentChar !== charSnapshot) return;
+    initFeedSelection();
     mountFeedingPanes(el, char);
     render();
     return;
@@ -395,14 +545,12 @@ export async function renderFeedingTab(el, char) {
       feedingState = 'ready';
     } else if (declaredMethod) {
       buildPool(declaredMethod, declaredDisc, declaredSpec);
-      poolTraitsTrusted = true;
       feedingState = 'ready';
     } else {
       feedingState = 'no_submission';
     }
   } else if (declaredMethod) {
     buildPool(declaredMethod, declaredDisc, declaredSpec);
-    poolTraitsTrusted = true;
     feedingState = 'ready';
   } else {
     feedingState = 'no_submission';
@@ -1036,17 +1184,12 @@ function fvcConseqClass(v) {
 }
 
 /**
- * Story 12.4: which of three colours a single drawn-vitae box fills with.
- * Ported verbatim from TM Story's `vitaeColourClass`
- * (public/js/downtime-form/feeding-reference.js:351-355) - Angelus's own live
- * ruling of 2026-09-02, deliberately SEPARATE from the five-tier label scale
- * above: 1-2 Vitae green, 3-4 amber, 5+ red.
+ * Story 12.4 ported TM Story's `vitaeColourClass` into this file as a local
+ * copy. Story 12.7 collapsed the two: it now lives beside the rest of the
+ * ported decision rules in `../data/story-feeding-rules.js` and is imported at
+ * the top of this file as `storyVitaeColourClass`, so the vessel strip and the
+ * read-only card below cannot drift apart from each other or from TM Story.
  */
-function vitaeColourClass(v) {
-  if (v <= 2) return 'vd-c-green';
-  if (v <= 4) return 'vd-c-amber';
-  return 'vd-c-red';
-}
 
 /**
  * Story 12.4: one vessel's drain, as the downtime form draws it - a card with a
@@ -1071,7 +1214,7 @@ function renderVesselCard(label, vitae) {
   h += '</div>';
   h += '<div class="vd-boxes">';
   for (let b = 1; b <= 7; b++) {
-    const filled = b <= v ? ` vd-box-filled ${vitaeColourClass(b)}` : '';
+    const filled = b <= v ? ` vd-box-filled ${storyVitaeColourClass(b)}` : '';
     h += `<span class="vd-box${filled}"></span>`;
   }
   h += '</div>';
@@ -1257,97 +1400,665 @@ function renderStConfirmPanel({ stDefault, aggHealed = 0, formSourced = false })
 }
 
 /**
- * Story 12.2: the read-only view of a roll the player already made in TM
- * Story's downtime form.
+ * Story 12.7 REPLACED `renderFormSourcedRoll()`.
  *
- * Renders nothing the player can act on. There is deliberately no roll button,
- * no vessel <select> and no allocation confirm here: the roll and the vessel
- * allocation are both already committed, and re-asking for either is the exact
- * double-work this story exists to remove.
+ * Story 12.2 added it as a strictly read-only view of a roll already made in TM
+ * Story's downtime form, on the reasoning that "the roll and the vessel
+ * allocation are both already committed". That premise is no longer true: TM Game
+ * can now complete a feed itself, so a cycle can genuinely sit with the roll done
+ * and the vessel feed and vitae heal still outstanding. Rendering those as an
+ * unchangeable read-out would have been the same double-work in reverse.
  *
- * Story 12.4 recomposed the dice and vessel markup onto TM Story's own
- * downtime-form components (.feeding-dice-col/.feeding-die, .vd-card/.vd-box),
- * so this view now looks like the form the player rolled in. Purely visual: the
- * precedence test, the normalisation boundary and the ST confirm write below
- * are all untouched.
+ * `renderStoryFeedFlow()` below serves BOTH states from one place and decides per
+ * panel whether it is a completed choice (locked) or an outstanding one (open).
+ * Everything 12.2/12.4 established is preserved inside it: the normalisation
+ * boundary (`normaliseStoryFeeding`), the column-and-stem dice, the .vd-card
+ * vessel strip, and the ST Confirm Feed panel with its single tracker_state write.
  */
-function renderFormSourcedRoll(isST) {
-  // `storyFeeding` is the NORMALISED copy (normaliseStoryFeeding): dice and
-  // vessel values are already integers this file produced, and the two strings
-  // still go through esc() below. Nothing raw from TM Story reaches innerHTML.
-  const f = storyFeeding;
-  const rr = f.rollResult;
-  const dice = rr.dice;
-  const successes = rr.successes;
-  const vessels = f.vesselVitae;
-  const vesselTotal = vessels.reduce((a, b) => a + b, 0);
 
-  let h = '<div class="feeding-result">';
-  h += '<p class="feeding-state-detail">Rolled in your downtime form. This result is final.</p>';
+// ═══════════════════════════════════════════════════════════════════════════
+// Story 12.7: the ported TM Story decision surface
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// Everything from here to `render()` is a PORT of TM Story's own downtime-form
+// Feeding section, adapted only for this app's character accessors and its own
+// fetch plumbing. The originals, all cited as of 2026-09-11:
+//
+//   TM Story/public/js/downtime-form/sections/feeding.js
+//     renderMethods()      :181-278   -> renderFeedMethodPicker()
+//     renderPool()         :297-376   -> renderFeedPool()
+//     renderBloodType()    :501-506   -> renderFeedToggles()
+//     renderViolence()     :508-528   -> renderFeedToggles()
+//     renderRollStatus()   :575-670   -> renderFeedRollStatus()
+//     renderVesselDrain()  :682-836   -> renderFeedVesselDrain()
+//     renderAggHealing()   :857-927   -> renderFeedAggHealing()
+//   TM Story/public/js/downtime-form/pool-builder.js
+//     renderPoolBuilder()  :84-216    -> feedPoolBuilderHtml()
+//       ONLY the `lock === 'recall'` (:141-151) and `suggestions` (:152-185)
+//       branches are ported. The plain three-select free builder (:186-200) is
+//       deliberately absent: it is the custom-pool builder, and AC 11 rules it
+//       permanently out of scope for TM Game.
+//
+// The design reference these were checked against is the locked mockup at
+// `TM Admin/specs/mockups/tm-game-feeding-tab-parity/index.html`, whose every
+// class name is a literal requirement rather than an example.
 
-  if (f.method) {
-    h += `<p class="feeding-method-label">Method: <strong>${esc(f.method)}</strong>`;
-    if (rr.rote)      h += ' <span class="feeding-rote-badge">Rote</span>';
-    if (rr.again === 9) h += ' <span class="feeding-again-badge">9-Again</span>';
-    if (rr.again === 8) h += ' <span class="feeding-again-badge">8-Again</span>';
-    if (rr.chance)    h += ' <span class="feeding-again-badge">Chance die</span>';
-    h += '</p>';
+/** Effective dots for every trait the pool builder can offer. */
+function feedDots(c) {
+  const d = {};
+  for (const a of ALL_ATTRS) d[a] = getAttrVal(c, a);
+  for (const s of ALL_SKILLS) d[s] = skTotal(c, s);
+  for (const [name, obj] of Object.entries(c?.disciplines || {})) d[name] = obj?.dots || 0;
+  return d;
+}
+
+/**
+ * Specialisations per skill, with the Interdisciplinary Specialty merit folded
+ * in - the same resolve-at-the-call-site treatment TM Story's own
+ * `sections/feeding.js:45-56` applies, over this app's own `isSpecs()` (which
+ * TM Story's `interdisciplinarySpecs()` was itself ported from).
+ */
+function feedSpecsMap(c) {
+  const cross = isSpecs(c).map(r => r.spec);
+  const out = {};
+  for (const skill of ALL_SKILLS) {
+    const own = skSpecs(c, skill) || [];
+    const extra = cross.filter(s => !own.some(n => String(n).toLowerCase() === String(s).toLowerCase()));
+    out[skill] = extra.length ? [...own, ...extra] : own;
   }
-  if (rr.pool !== null) {
-    h += '<div class="feeding-pool-display">';
-    h += `<span class="feeding-pool-total">${rr.pool} dice</span>`;
-    h += '</div>';
+  return out;
+}
+
+function feedDiscNames(c) {
+  return Object.keys(c?.disciplines || {});
+}
+
+/**
+ * The Feeding Grounds bonus, from THIS app's own merit accessor rather than a
+ * reimplementation.
+ *
+ * KNOWN DIVERGENCE, stated rather than hidden: TM Story's `feedingGroundsBonus`
+ * is TERRITORY-aware (a character may hold Feeding Grounds in more than one
+ * territory at different ratings, and the bonus only applies in the one they
+ * are actually hunting in). This app's `domMeritContrib` is not. The number
+ * below is therefore an ESTIMATE of what the roll will use; the authoritative
+ * figure is derived server-side at roll time (AC 2) and comes back on
+ * `rollResult.pool`, which is what the rolled view renders. The two can disagree
+ * before a roll and never after one.
+ */
+function feedGroundsBonus(c) {
+  return domMeritContrib(c, 'Feeding Grounds');
+}
+
+/** Area of Expertise's EXTRA dot, on top of the builder's own +1 for a chip. */
+function feedSpecExtraBonus(c, spec) {
+  return spec && hasAoE(c, spec) ? 1 : 0;
+}
+
+/** The VtR 2e unskilled penalty, per the skill actually picked. */
+function feedUnskilledPenalty(c, skill) {
+  if (!skill) return 0;
+  if (skTotal(c, skill) > 0) return 0;
+  return SKILLS_MENTAL.includes(skill) ? -3 : -1;
+}
+
+/** The pool a roll would actually use, floored at 0 (`combinedPoolTotal`). */
+function feedEffectivePool() {
+  const c = currentChar;
+  if (!c || !feedSel) return 0;
+  const dots = feedDots(c);
+  const base = (feedSel.poolAttr ? (dots[feedSel.poolAttr] || 0) : 0)
+    + (feedSel.poolSkill ? (dots[feedSel.poolSkill] || 0) : 0)
+    + (feedSel.poolDisc ? (dots[feedSel.poolDisc] || 0) : 0)
+    + (feedSel.poolSpecChip ? 1 : 0);
+  const extras = feedGroundsBonus(c)
+    + feedSpecExtraBonus(c, feedSel.poolSpecChip)
+    + feedUnskilledPenalty(c, feedSel.poolSkill);
+  return Math.max(0, base + extras);
+}
+
+/**
+ * The declaration fields off TM Story's `content.feeding`, coerced at the
+ * boundary.
+ *
+ * Same discipline as `normaliseStoryFeeding` above and for the same Story 12.2
+ * reason: TM Story is a genuinely external app, and nothing from its payload may
+ * reach innerHTML except a value this file has type-checked (and then `esc()`-ed
+ * at the point of use).
+ */
+function normaliseStoryDeclaration(f) {
+  const str = v => (typeof v === 'string' ? v : '');
+  const o = (f && typeof f === 'object' && !Array.isArray(f)) ? f : {};
+  const terr = (o.territory && typeof o.territory === 'object' && !Array.isArray(o.territory)) ? o.territory : null;
+  return {
+    method: str(o.method),
+    poolAttr: str(o.poolAttr),
+    poolSkill: str(o.poolSkill),
+    poolDisc: str(o.poolDisc),
+    poolSpecChip: o.poolSpecChip == null ? null : str(o.poolSpecChip),
+    bloodType: ['Animal', 'Human', 'Kindred'].includes(o.bloodType) ? o.bloodType : 'Human',
+    violence: (o.violence === 'kiss' || o.violence === 'violent') ? o.violence : null,
+    poolLocked: o.poolLocked === true,
+    territory: terr ? { id: str(terr.id), label: str(terr.label) } : null,
+    aggHealed: (Number.isInteger(o.aggHealed) && o.aggHealed > 0) ? o.aggHealed : 0,
+    // A vessel declaration EXISTS the moment the key is a non-empty array, even
+    // if every entry is 0 - "I drew nothing from any of them" is a real answer
+    // and must lock the same way any other completed choice does.
+    vesselsDeclared: Array.isArray(o.vesselVitae) && o.vesselVitae.length > 0,
+  };
+}
+
+/**
+ * The two reference reads the ported surface needs: the live template list
+ * (AC 12) and the previous cycle's pool for the recall card (AC 11).
+ *
+ * Never throws: both clients resolve to a result object, and a failure leaves
+ * the tab saying plainly what it could not load.
+ */
+async function hydrateStoryFeedingRefs(charId, cycleId) {
+  const [tplRes, prevRes] = await Promise.all([
+    fetchStoryFeedingTemplates(),
+    fetchStoryPrevious(charId, cycleId),
+  ]);
+  storyTemplatesOk = !!tplRes.ok;
+  storyTemplates = tplRes.ok ? normaliseTemplates(tplRes.data) : [];
+  storyRecall = prevRes.ok ? feedingPoolRecall(prevRes.data) : null;
+}
+
+/**
+ * Seed the working selection from what TM Story already holds.
+ *
+ * `feedFrozen` is the whole workflow rule in one line (Angelus, 2026-09-11): a
+ * genuinely declared method means the pool is frozen and no picker is ever
+ * offered - only whatever is still outstanding.
+ */
+function initFeedSelection() {
+  const d = normaliseStoryDeclaration(storyFeedRaw);
+  // A genuinely declared method freezes the pool. So does an existing roll, even
+  // on the (data-damaged) submission whose method somehow reads blank: once the
+  // dice are cast there is no declaration left to make, and offering a picker
+  // then would invite a write the endpoint would refuse anyway (AC 4, one roll
+  // only).
+  feedFrozen = d.method !== '' || isUsableStoryRoll(storyFeedRaw);
+  feedSel = {
+    method: d.method,
+    poolAttr: d.poolAttr,
+    poolSkill: d.poolSkill,
+    poolDisc: d.poolDisc,
+    poolSpecChip: d.poolSpecChip,
+    bloodType: d.bloodType,
+    violence: d.violence,
+    poolLocked: d.poolLocked,
+    territory: d.territory,
+  };
+  feedVesselsCommitted = d.vesselsDeclared;
+  feedVesselDraft = null;
+  feedAggDraft = d.aggHealed;
+  feedRollConfirming = false;
+}
+
+/** The roll gate, evaluated against the current selection (AC 14). */
+function currentRollGate() {
+  if (!feedSel) return { available: false, reason: 'loading your declaration.' };
+  return feedingRollGate({
+    hasMethod: templateForMethod(storyTemplates, feedSel.method) != null,
+    isCustom: isCustomApproach(feedSel.method),
+    recalled: !!feedSel.poolLocked,
+    violence: feedSel.violence,
+  });
+}
+
+/** Trait picks only - never a total, never dice (AC 2). */
+function rollRequestBody() {
+  return {
+    method: feedSel.method,
+    poolAttr: feedSel.poolAttr,
+    poolSkill: feedSel.poolSkill,
+    poolDisc: feedSel.poolDisc,
+    poolSpecChip: feedSel.poolSpecChip,
+    bloodType: feedSel.bloodType,
+    violence: feedSel.violence,
+    poolLocked: !!feedSel.poolLocked,
+    ...(feedSel.territory ? { territory: feedSel.territory } : {}),
+  };
+}
+
+/** How a stored method reads back to a human (`sections/feeding.js:96-101`). */
+function feedMethodLabel(methodKey) {
+  if (isCustomApproach(methodKey)) return 'My own approach';
+  if (!methodKey) return 'Not recorded.';
+  const t = templateForMethod(storyTemplates, methodKey);
+  return t ? t.name : 'A method no longer offered';
+}
+
+// ── the pool builder (pool-builder.js:84-216, recall + suggestions branches) ──
+
+/**
+ * `lock` is 'recall' or 'template'. `frozen` additionally disables every control
+ * including the chips, which is what a declaration already on file looks like -
+ * TM Story never needs that mode because its own form is still editable at the
+ * point it renders this.
+ */
+function feedPoolBuilderHtml({ lock, suggestions, frozen }) {
+  const c = currentChar;
+  const dots = feedDots(c);
+  const specs = feedSpecsMap(c);
+  const discs = feedDiscNames(c);
+  const state = {
+    attr: feedSel.poolAttr, skill: feedSel.poolSkill,
+    disc: feedSel.poolDisc, specChip: feedSel.poolSpecChip,
+  };
+  const total = feedEffectivePool();
+  const dotLabel = t => `${esc(t)} (${dots[t] || 0})`;
+  // A stored value the current list no longer offers is PREPENDED rather than
+  // silently rendering as the blank placeholder while still travelling into the
+  // request (pool-builder.js's own `keepUnlisted`, which Feeding always passes).
+  const withCurrent = (list, cur) => (cur && !list.includes(cur) ? [cur, ...list] : list);
+  // Every select in both ported branches is disabled: 'recall' disables them by
+  // definition, and 'template' disables them because the chips are the only
+  // intended input (pool-builder.js:155).
+  const sel = (list, cur, key, ph) => `<select class="qf-select" data-pb="${esc(key)}" disabled>`
+    + `<option value="">${esc(ph)}</option>`
+    + withCurrent(list, cur).map(t => `<option value="${esc(t)}" ${t === cur ? 'selected' : ''}>${dotLabel(t)}</option>`).join('')
+    + '</select>';
+  const specChips = () => {
+    const sk = specs[state.skill] || [];
+    if (!sk.length) return `<div class="dt-pool-row"><span class="dt-feed-spec-none">No specialisations on ${esc(state.skill || 'this skill')}.</span></div>`;
+    return `<div class="dt-pool-row">${sk.map(sp =>
+      `<button type="button" class="chip chip--suggest ${state.specChip === sp ? 'chip--on' : ''}" data-pb-spec="${esc(sp)}"${frozen ? ' disabled' : ''}>${esc(state.skill)} (${esc(sp)})</button>`
+    ).join('')}</div>`;
+  };
+
+  if (lock === 'recall') {
+    return '<div class="dt-pool-row">'
+      + sel(ALL_ATTRS, state.attr, 'attr', 'Attribute')
+      + sel(ALL_SKILLS, state.skill, 'skill', 'Skill')
+      + sel(discs, state.disc, 'disc', 'No Discipline')
+      + `<span class="dt-pool-total">${total}</span></div>`
+      + specChips()
+      + `<div class="dt-pool-row"><span class="dt-pool-valid">${esc(frozen
+        ? 'Pre-approved pool, locked from your downtime form'
+        : 'Pre-approved pool, reused from last cycle')}</span></div>`;
   }
 
-  h += `<div class="feeding-suc">${successes}</div>`;
-  h += `<div class="feeding-suc-label">success${successes !== 1 ? 'es' : ''}`;
-  if (rr.exceptional) h += ' (exceptional)';
+  // suggestions branch (`lock === 'template'`)
+  const chip = (list, cur, key, extra = '') => list.map(t =>
+    `<button type="button" class="chip chip--suggest ${extra} ${cur === t ? 'chip--on' : ''}" data-pb-${esc(key)}="${esc(t)}"${frozen ? ' disabled' : ''}>${dotLabel(t)}</button>`
+  ).join('');
+  const conf = conformance(state, suggestions);
+  const line = conf === 'on-template'
+    ? '<div class="dt-pool-row"><span class="dt-pool-valid">Pool matches the template</span></div>'
+    : conf === 'custom'
+      ? '<div class="dt-pool-row"><span class="dt-pool-review">Custom pool, make sure your approach supports it</span></div>'
+      : '';
+  // An EMPTY suggestion list must not leave a dangling separator with nothing
+  // either side of it (pool-builder.js:163-173) - real templates legitimately
+  // carry `discs: []`.
+  const suggestRow = [
+    chip(suggestions.attrs, state.attr, 'attr'),
+    chip(suggestions.skills, state.skill, 'skill'),
+    chip(suggestions.discs, state.disc, 'disc', 'dt-suggest-chip-disc'),
+  ].filter(Boolean).join('<span class="dt-suggest-sep">/</span>');
+  return '<div class="dt-pool-row">'
+    + sel(ALL_ATTRS, state.attr, 'attr', 'Attribute')
+    + sel(ALL_SKILLS, state.skill, 'skill', 'Skill')
+    + `<span class="dt-pool-total">${total}</span></div>`
+    + `<div class="dt-suggest-row"><span class="dt-suggest-label">Suggestions:</span> ${suggestRow}</div>${line}`;
+}
+
+/** Which of the three modes the pool is in (`feeding-reference.js:499-505`). */
+function feedPoolMode() {
+  const tpl = templateForMethod(storyTemplates, feedSel.method);
+  const suggestions = tpl ? { attrs: tpl.attrs, skills: tpl.skills, discs: tpl.discs } : null;
+  const lockInput = {
+    recalled: !!feedSel.poolLocked,
+    hasTemplate: tpl != null,
+    isCustom: isCustomApproach(feedSel.method),
+    offTemplate: conformance(
+      { attr: feedSel.poolAttr, skill: feedSel.poolSkill, disc: feedSel.poolDisc },
+      suggestions,
+    ) === 'custom',
+  };
+  return { tpl, suggestions, mode: poolLockMode(lockInput) };
+}
+
+function renderFeedPool() {
+  const { suggestions, mode } = feedPoolMode();
+  // Nothing chosen yet and nothing frozen: there is no pool to show, and there
+  // is deliberately no free builder to fall back to (AC 11).
+  if (mode === 'open' && !feedFrozen) {
+    return '<p class="qf-explainer">Pick a method above for a pre-approved pool.</p>';
+  }
+  // THE HINT COPY. The two locked sentences are TM Story's own, verbatim
+  // (`poolHintCopy`, feeding-reference.js:520-537). Its 'open' sentences are
+  // NOT reproduced: every one of them offers "Something else to build freely",
+  // which this tab does not have and must never imply it has.
+  const hint = mode === 'recall'
+    ? 'Locked to your last approved pool. No ST review needed.'
+    : "Locked to this method's own suggestions, pick from the chips below. No ST review needed.";
+  let h = `<p class="qf-explainer">${esc(feedFrozen ? 'Locked from your downtime form. No ST review needed.' : hint)}</p>`;
+  h += feedPoolBuilderHtml({
+    // A frozen pool with no live template (a retired one, or a declared custom
+    // approach) still has to SHOW what will be rolled, and the recall branch is
+    // the one that renders all three selects.
+    lock: mode === 'template' ? 'template' : 'recall',
+    suggestions,
+    frozen: feedFrozen,
+  });
+  return h;
+}
+
+// ── the method picker (sections/feeding.js:181-278, minus the custom card) ────
+
+function renderFeedMethodPicker() {
+  const card = (key, name, desc, extraClass = '') =>
+    `<button type="button" class="dt-feed-card ${extraClass} ${key === feedSel.method && !feedSel.poolLocked ? 'dt-feed-sel' : ''}" data-feed-method="${esc(key)}"${feedBusy ? ' disabled' : ''}>`
+    + `<span class="dt-feed-card-name">${esc(name)}</span>`
+    + `<span class="dt-feed-card-desc">${esc(desc)}</span></button>`;
+
+  let h = '<div class="dt-vitae-title">Choose your approach</div>';
+  if (!storyTemplates.length) {
+    h += `<div class="feeding-warning">${esc(storyTemplatesOk
+      ? 'The downtime service is offering no feeding methods at the moment. Contact your Storyteller.'
+      : 'Could not load the feeding methods from the downtime service. Reload the page to try again.')}</div>`;
+    return h;
+  }
+
+  const recallDesc = storyRecall
+    ? `${storyRecall.poolAttr} + ${storyRecall.poolSkill}${storyRecall.poolDisc ? ` + ${storyRecall.poolDisc}` : ''} (${storyRecall.label})`
+    : 'No previous cycle pool to recall';
+  h += '<div class="dt-feed-card-wrap">';
+  h += `<div class="dt-feed-card-grid">${storyTemplates.map(t => card(t.key, t.name, t.desc)).join('')}</div>`;
+  // Always visible, never hidden, just inert when there is nothing real to
+  // recall - Angelus's own 2026-09-01 ruling, ported with the card.
+  h += `<button type="button" class="dt-feed-card dt-feed-card-recall ${feedSel.poolLocked ? 'dt-feed-sel' : ''}" data-feed-method-recall-use${(storyRecall && !feedBusy) ? '' : ' disabled'}>`
+    + '<span class="dt-feed-card-name">Same as Last Time</span>'
+    + `<span class="dt-feed-card-desc">${esc(recallDesc)}</span></button>`;
   h += '</div>';
+  // AC 11's own absence, said out loud rather than left as a silent gap. Written
+  // with plain punctuation: the mockup's own wording carries an em-dash, which
+  // this repo forbids in any player-facing string.
+  h += '<div class="feeding-warning">There is no "Something else" option here. A genuinely custom pool needs Storyteller review, which this tab has no path for, so declare one in the downtime form instead. Pick a template above, or contact your Storyteller if none of them fit.</div>';
+  return h;
+}
 
-  // Story 12.4: the form's own column-and-stem dice, over the same flat array.
-  // `isHit` is chance-aware, matching TM Story's own dieHtml exactly - an 8 on a
-  // chance die is not a hit, and the flat row this replaces coloured it as one
-  // right beside "0 successes".
-  const isHit = v => (rr.chance ? v === 10 : v >= 8);
-  h += renderDiceCols(diceColumns(dice, rr.again), isHit);
+// ── blood type + kiss-or-assault (sections/feeding.js:501-528) ────────────────
 
-  if (rr.dramatic_failure) {
-    h += '<div class="feeding-dramatic">Dramatic failure \u2014 see your Storyteller at game before feeding.</div>';
+function renderFeedToggles() {
+  // Nothing here is answerable once the dice are cast - blood type and violence
+  // both fed into a pool that has already been rolled.
+  if (storyFeeding?.rollResult) return '';
+  // Blood type is only offered when nothing is on file: a frozen declaration
+  // already answered it, and it is shown read-only with the pool instead.
+  const showBlood = !feedFrozen;
+  // Violence is offered whenever it is genuinely unanswered, frozen or not - an
+  // unanswered question is "a choice not made", which the workflow rule says is
+  // left to be completed. Without this a frozen declaration carrying no violence
+  // (Stalking, Feral Hunt and friends have no default) would sit behind the
+  // gate's "choose The Kiss or Assault above" with nothing above to choose.
+  const showViolence = !feedFrozen || feedSel.violence == null;
+  if (!showBlood && !showViolence) return '';
+
+  let h = '';
+  if (showBlood) {
+    h += '<div class="dt-vitae-title">Blood Type</div>';
+    h += `<div class="dt-feed-toggle-row">${['Animal', 'Human', 'Kindred'].map(t =>
+      `<button type="button" class="dt-feed-vi-btn ${feedSel.bloodType === t ? 'dt-feed-vi-on' : ''}" data-feed-bt="${esc(t)}"${feedBusy ? ' disabled' : ''}>${esc(t)}</button>`
+    ).join('')}</div>`;
+  }
+  if (showViolence) {
+    h += '<div class="dt-vitae-title">Kiss or Assault</div>';
+    h += `<div class="dt-feed-toggle-row">${['kiss', 'violent'].map(v =>
+      `<button type="button" class="dt-feed-vi-btn ${feedSel.violence === v ? 'dt-feed-vi-on' : ''}" data-feed-vi="${esc(v)}"${feedBusy ? ' disabled' : ''}>${v === 'kiss' ? 'The Kiss' : 'Assault'}</button>`
+    ).join('')}</div>`;
+    h += `<p class="dt-feed-hint">${esc(feedSel.violence == null ? 'Choose one.' : 'Explicitly chosen.')}</p>`;
+  }
+  return h;
+}
+
+// ── the roll itself (sections/feeding.js:575-670) ─────────────────────────────
+
+function renderFeedRollStatus() {
+  // ORDER MATTERS, and it is deliberately the reverse of TM Story's own.
+  // `sections/feeding.js:587` checks the gate first because its `rollResult` is
+  // LOCAL state it may legitimately clear when the gate closes. Here the result
+  // is TM Story's own stored record: it is the authoritative fact, and a gate
+  // that happens to read closed (a declaration whose template was later retired,
+  // say) must never hide a roll that really happened.
+  const rr = storyFeeding?.rollResult || null;
+  if (!rr) {
+    const gate = currentRollGate();
+    if (!gate.available) {
+      return `<div class="feeding-warning">Feeding Roll not available yet - ${esc(gate.reason)}</div>`;
+    }
+  }
+  if (rr) {
+    const rolledRoteNote = rr.rote ? ' (Rote: rolled twice, kept the better result)' : '';
+    const rolledNineAgainNote = rr.again === 9 ? ' (9-Again)' : rr.again === 8 ? ' (8-Again)' : '';
+    const successNote = `${rr.successes} success${rr.successes === 1 ? '' : 'es'}`;
+    const exceptionalNote = rr.exceptional ? ', exceptional' : '';
+    const dramaticNote = rr.dramatic_failure ? ' - dramatic failure' : '';
+    // A chance die only succeeds on a 10, never on "8 or higher" - TM Story's
+    // own Codex fix, carried here rather than re-broken.
+    const isHit = v => (rr.chance ? v === 10 : v >= 8);
+    // `rr.pool` is null only when TM Story sent something that was not a
+    // non-negative integer; the dice actually rolled are then the honest count.
+    const poolShown = rr.pool === null ? rr.dice.length : rr.pool;
+    return '<div class="feeding-ready">'
+      + `<span class="feeding-pool-display">Rolled ${rr.chance ? 'a chance die' : `${poolShown} dice`}${rolledRoteNote}${rolledNineAgainNote} - <strong>${successNote}${exceptionalNote}</strong>${dramaticNote}.</span>`
+      + renderDiceCols(diceColumns(rr.dice, rr.again), isHit)
+      + '<button type="button" class="feeding-roll-btn" disabled>Already Rolled - one roll only</button>'
+      + '</div>';
   }
 
-  if (!vessels.length) {
-    h += '<p class="feeding-no-vessels">No vessels recorded this hunt.</p>';
-  } else if (f.bloodType === 'Animal') {
-    // An Animal feed records ONE pooled vitae total, not per-vessel harm (TM
-    // Story's own normaliseVesselVitae, public/js/downtime-form/content-shape.js)
-    // - the 0-7 harm scale fvcConseqText encodes does not apply to it, so no
-    // consequence label is rendered for that shape.
-    // Story 12.4: a .vd-card in the shared grid, but deliberately with NO box
-    // strip. TM Story draws one box per point of the SHARED POOL (successes x 3,
-    // its own renderVesselDrain(), feeding.js:716) and TM Game must not
-    // reconstruct that rule - inventing a rules calculation here would be a
-    // logic change, which this story is not. The card, its head and the count
-    // are the form's; only the pool ceiling it cannot honestly know is omitted.
-    h += '<div class="feeding-vessels-grid">';
-    h += '<div class="vd-card">';
+  const pool = feedEffectivePool();
+  const again = skNineAgain(currentChar, feedSel.poolSkill) ? 9 : 10;
+  const nineAgainNote = again === 9 ? ' (9-Again)' : '';
+  const poolLabel = pool > 0 ? `${pool} dice` : 'a chance die (pool is 0)';
+
+  if (feedRollConfirming) {
+    return '<div class="feeding-warning feeding-roll-confirm">'
+      + `<strong>This is irreversible.</strong> You are about to commit to a Feeding Roll of ${esc(poolLabel)}${esc(nineAgainNote)}. You only get one roll.`
+      + '<div class="feeding-roll-confirm-actions">'
+      + `<button type="button" class="feeding-roll-btn" data-feeding-roll-confirm${feedBusy ? ' disabled' : ''}>${feedBusy ? 'Rolling…' : 'Confirm Roll'}</button>`
+      + `<button type="button" class="qf-btn-ghost" data-feeding-roll-cancel${feedBusy ? ' disabled' : ''}>Cancel</button>`
+      + '</div></div>';
+  }
+
+  // The pool figure is this app's own estimate; TM Story derives the real one at
+  // roll time (AC 2). "Pre-approved, no ST review needed" is the gate's own
+  // guarantee and is true whichever number it turns out to be.
+  return '<div class="feeding-ready">'
+    + `<span class="feeding-pool-display">Pool ready: ${esc(poolLabel)}${esc(nineAgainNote)}. Pre-approved, no ST review needed.</span>`
+    + `<button type="button" class="feeding-roll-btn" data-feeding-roll${feedBusy ? ' disabled' : ''}>Roll Feeding</button>`
+    + '</div>';
+}
+
+// ── vessel drain (sections/feeding.js:682-836) ────────────────────────────────
+
+/** Is there a resolved feed to draw vessels from at all? */
+function feedResolvedRoll() {
+  const rr = storyFeeding?.rollResult || null;
+  if (!rr || rr.chance || rr.dramatic_failure || rr.successes <= 0) return null;
+  return rr;
+}
+
+/** The per-vessel draw currently on screen, and whether it can be edited. */
+function feedVesselView() {
+  const rr = feedResolvedRoll();
+  if (!rr) return null;
+  const animal = (storyFeeding?.bloodType || feedSel?.bloodType) === 'Animal';
+  const committed = feedVesselsCommitted;
+  if (!committed && !Array.isArray(feedVesselDraft)) {
+    // One 7-box track per success, or a single shared pool for an animal feed.
+    feedVesselDraft = animal ? [0] : new Array(rr.successes).fill(0);
+  }
+  const drawn = committed ? (storyFeeding?.vesselVitae || []) : feedVesselDraft;
+  return { rr, animal, committed, drawn, editable: !committed && !feedBusy };
+}
+
+function renderFeedVesselDrain() {
+  const view = feedVesselView();
+  if (!view) return '';
+  const { rr, animal, committed, drawn, editable } = view;
+  const total = drawn.reduce((a, b) => a + b, 0);
+
+  // Animal blood: ONE shared pool of 3 Vitae per success, not one vessel per
+  // success, and no Breaking Point risk at any amount (Angelus, 2026-09-01).
+  if (animal) {
+    const poolMax = rr.successes * 3;
+    const v = Math.min(drawn[0] || 0, poolMax);
+    let h = '<div class="dt-vitae-title">Animal Blood Pool - shared, no Breaking Point risk</div>';
+    h += `<p class="qf-explainer">Animal blood does not shake a vampire's Humanity - feeding from an animal never triggers a Breaking Point, however much of the pool you draw. This feed yielded a pool of ${poolMax} Vitae (3 per success) to draw from freely.</p>`;
+    h += '<div class="feeding-vessels-grid"><div class="vd-card">';
     h += '<div class="vd-card-head"><span>Animal Blood Pool</span></div>';
-    h += `<div class="vd-vitae-count">${vesselTotal} vitae drawn</div>`;
-    h += '</div></div>';
-  } else {
-    h += '<div class="feeding-vessels-grid">';
-    vessels.forEach((v, i) => { h += renderVesselCard(`Vessel ${i + 1}`, v); });
+    h += '<div class="vd-boxes" data-vessel-idx="0">';
+    for (let b = 1; b <= poolMax; b++) {
+      const filled = b <= v ? ` vd-box-filled ${storyVitaeColourClass(b)}` : '';
+      h += editable
+        ? `<button type="button" class="vd-box${filled}" data-box="${b}" aria-label="${b} vitae"></button>`
+        : `<span class="vd-box${filled}"></span>`;
+    }
+    h += `</div><div class="vd-vitae-count">${v} vitae drawn</div></div></div>`;
+    h += `<div class="vd-summary">Total vitae drawn: <strong>${v}</strong></div>`;
+    if (committed) h += '<div class="fvc-alloc-badge">✓ Vessel feed recorded</div>';
+    return h;
+  }
+
+  let h = '<div class="dt-vitae-title">Vessels - feed from up to 7 Vitae each</div>';
+  h += '<div class="feeding-vessels-grid">';
+  for (let i = 0; i < drawn.length; i++) {
+    const v = Math.max(0, Math.min(7, drawn[i] || 0));
+    const tier = vesselHarmTier(v);
+    h += '<div class="vd-card">';
+    h += `<div class="vd-card-head"><span>Vessel ${i + 1}</span>${v ? `<span class="vd-tier ${tier.cls}">${esc(tier.label)}</span>` : ''}</div>`;
+    h += `<div class="vd-boxes" data-vessel-idx="${i}">`;
+    for (let b = 1; b <= 7; b++) {
+      const filled = b <= v ? ` vd-box-filled ${storyVitaeColourClass(b)}` : '';
+      h += editable
+        ? `<button type="button" class="vd-box${filled}" data-box="${b}" aria-label="${b} vitae"></button>`
+        : `<span class="vd-box${filled}"></span>`;
+    }
+    h += '</div>';
+    h += `<div class="vd-vitae-count">${v} vitae drawn</div>`;
     h += '</div>';
   }
-  if (vessels.length) {
-    h += `<div class="vd-summary">Total Vitae: <strong>${vesselTotal}</strong></div>`;
-    h += '<div class="fvc-alloc-badge">\u2713 Allocation recorded in the downtime form</div>';
+  h += '</div>';
+  h += `<div class="vd-summary">Total vitae drawn: <strong>${total}</strong></div>`;
+  if (committed) h += '<div class="fvc-alloc-badge">✓ Vessel feed recorded</div>';
+  return h;
+}
+
+// ── aggravated healing (sections/feeding.js:857-927) ──────────────────────────
+
+function renderFeedAggHealing() {
+  const rr = storyFeeding?.rollResult || null;
+  const resolved = !!rr && !rr.chance && !rr.dramatic_failure;
+  if (!resolved) return '';
+  const ts = trackerFigures();
+  // Fail-closed: no readable tracker document means the real Aggravated count is
+  // unknown, and a fabricated zero-box state would be worse than an honest gap.
+  if (!ts || ts.aggravated <= 0) return '';
+
+  const committed = feedVesselsCommitted;
+  const drawn = committed ? (storyFeeding?.vesselVitae || []) : (feedVesselDraft || []);
+  // KNOWN NARROWING, stated rather than hidden: TM Story's own budget is the
+  // vessel draws PLUS its Vitae Projection net (territory ambience, Herd,
+  // Flock). This tab has no equivalent projection for a TM-Story-sourced feed -
+  // the ST confirm panel below already says the bonus vitae is not tallied here
+  // and is added with the stepper - so the budget offered is the vessel draws
+  // alone. That is a floor on what the player may commit, never an overstatement.
+  const fedTotal = Math.max(0, drawn.reduce((a, b) => a + b, 0));
+  let healed = committed ? (storyFeeding?.aggHealed || 0) : feedAggDraft;
+  // Clamp down if the draw fell after some healing was already committed (the
+  // boxes above let the total drop at any time while this panel is open).
+  if (!committed && healed * 4 > fedTotal) {
+    healed = Math.max(0, Math.floor(fedTotal / 4));
+    feedAggDraft = healed;
+  }
+  if (healed > ts.aggravated) healed = ts.aggravated;
+  const spent = healed * 4;
+  const remaining = Math.max(0, fedTotal - spent);
+  const editable = !committed && !feedBusy;
+
+  let h = '<div class="dt-vitae-title">Heal Aggravated Damage</div>';
+  h += '<p class="qf-explainer">4 Vitae heals 1 Aggravated damage box, spent from this cycle\'s own fed total only - it never carries over between cycles.</p>';
+  h += '<div class="dt-agg-boxes">';
+  for (let i = 1; i <= ts.aggravated; i++) {
+    const isHealed = i <= healed;
+    // An already-healed box is NEVER disabled: clicking it can only reduce the
+    // commitment. A not-yet-healed box disables once committing up to it would
+    // exceed the fed total.
+    const disabled = !isHealed && i * 4 > fedTotal;
+    h += editable
+      ? `<button type="button" class="dt-agg-box ${isHealed ? 'dt-agg-box-healed' : ''}" data-agg-box="${i}"${disabled ? ' disabled' : ''} aria-label="Aggravated damage box ${i}, ${isHealed ? 'committed to heal - click to un-commit' : 'click to commit 4 Vitae to heal'}"></button>`
+      : `<span class="dt-agg-box ${isHealed ? 'dt-agg-box-healed' : ''}"></span>`;
   }
   h += '</div>';
+  h += `<div class="dt-agg-summary">${spent} of ${fedTotal} Vitae committed to healing, ${remaining} remaining</div>`;
+  return h;
+}
 
-  if (isST) {
+// ── the whole surface ─────────────────────────────────────────────────────────
+
+function renderFeedNotice() {
+  if (!feedNotice) return '';
+  return `<div class="feeding-warning feeding-write-notice">${esc(feedNotice.text)}</div>`;
+}
+
+/**
+ * Story 12.7's flow, for both `story-feed` and `rolled-from-form`.
+ *
+ * Angelus's own workflow rule, applied top to bottom: choices already made
+ * render locked, choices not yet made render open, and everything still
+ * outstanding opens TOGETHER rather than one panel per visit.
+ */
+function renderStoryFeedFlow(isST) {
+  if (!feedSel) return '';
+  const rr = storyFeeding?.rollResult || null;
+  let h = '<div class="feeding-story-flow">';
+
+  if (feedFrozen) {
+    h += '<span class="lock-tag">🔒 Locked from downtime</span>';
+    h += `<div class="dt-vitae-title">Your approach: ${esc(feedMethodLabel(feedSel.method))}</div>`;
+    const where = feedSel.territory?.label ? `Hunting in ${feedSel.territory.label}` : 'Hunting';
+    const blood = feedSel.bloodType ? `, ${feedSel.bloodType.toLowerCase()} blood` : '';
+    const viol = feedSel.violence ? `, ${feedSel.violence === 'kiss' ? 'the Kiss' : 'Assault'}` : '';
+    h += `<p class="qf-explainer">${esc(`${where}${blood}${viol}.`)}</p>`;
+  } else {
+    h += renderFeedMethodPicker();
+  }
+
+  h += renderFeedPool();
+  h += renderFeedToggles();
+  h += renderFeedRollStatus();
+
+  // GATED (2026-09-11, independent verification of Story 12.7): the write half of
+  // this panel (`doFeedingDeclaration()` / `POST .../feeding/declaration`) was
+  // built against a path TM Story does not serve - that work was split out to
+  // Story 12.8 (`depends_on: 12.7`, not yet built) and this route does not exist
+  // on the real server. Rendering the interactive draft + a "Save" button here
+  // would be a guaranteed 404 on a player's own primary action, tested green only
+  // because the Playwright spec mocks the endpoint. Already-committed data (real,
+  // recorded through the downtime form) still renders read-only below - that is a
+  // read, not a write, and stays live. Un-gate this the same day Story 12.8 ships
+  // its server route; do not flip it on speculatively.
+  if (feedVesselsCommitted) {
+    h += renderFeedVesselDrain();
+    h += renderFeedAggHealing();
+  } else if (feedResolvedRoll()) {
+    h += '<p class="qf-explainer">Vessel feed and Aggravated healing write-back from this tab is arriving in a follow-up story (12.8). Record it in the downtime form for now - your roll above is saved either way.</p>';
+  }
+
+  h += '</div>';
+
+  // The ST's Confirm Feed panel, unchanged from Story 12.2 - the same single
+  // tracker_state write, over the same figures.
+  if (isST && rr) {
+    const committedVessels = feedVesselsCommitted ? (storyFeeding?.vesselVitae || []) : [];
     h += renderStConfirmPanel({
-      stDefault: vesselTotal,
-      aggHealed: f.aggHealed,
+      stDefault: committedVessels.reduce((a, b) => a + b, 0),
+      aggHealed: feedVesselsCommitted ? (storyFeeding?.aggHealed || 0) : 0,
       formSourced: true,
     });
   }
@@ -1366,6 +2077,11 @@ function render() {
   // rolled here, or rolled in the downtime form. Skipped only while loading,
   // when there is nothing fetched to report against.
   if (feedingState !== 'loading') h += renderInfluenceWillpowerTally();
+
+  // Story 12.7: whatever the last write said, in every state - the residual
+  // TM-Game-sourced states need it too, because their own roll affordance now
+  // explains why it cannot save rather than silently dropping a result.
+  h += renderFeedNotice();
 
   // ── LOADING ──
   if (feedingState === 'loading') {
@@ -1573,9 +2289,12 @@ function render() {
     }
   }
 
-  // ── ROLLED IN THE DOWNTIME FORM (TM Story, Epic 12 Story 12.2) ──
-  if (feedingState === 'rolled-from-form' && storyFeeding) {
-    h += renderFormSourcedRoll(isST);
+  // ── TM STORY OWNS THIS CYCLE (Epic 12, Stories 12.2 + 12.7) ──
+  // One flow for both states: `story-feed` is "nothing rolled yet", and
+  // `rolled-from-form` is "the roll exists" - and in either case the flow itself
+  // decides, panel by panel, what is already settled and what is outstanding.
+  if (feedingState === 'story-feed' || feedingState === 'rolled-from-form') {
+    h += renderStoryFeedFlow(isST);
   }
 
   // ── ST OVERRIDE PANEL ──
@@ -1607,11 +2326,150 @@ function render() {
   wireEvents();
 }
 
+/**
+ * Story 12.7: the ported surface's own wiring.
+ *
+ * Every listener is scoped to `.feeding-story-flow`, so nothing here can reach
+ * the residual TM-Game-sourced states rendered beside it - they share several
+ * class and data-attribute names (`.vd-box`, `.dt-agg-box`, `[data-feed-method]`)
+ * and mean different things by them.
+ *
+ * The click behaviours are ported from `sections/feeding.js` (the method/recall
+ * cards, :218-277) and `pool-builder.js` (the chips, :210-213), including their
+ * own review-fix guards, which are called out individually below.
+ */
+function wireStoryFeedEvents() {
+  const root = container.querySelector('.feeding-story-flow');
+  if (!root || !feedSel) return;
+  const redraw = () => { render(); };
+
+  root.querySelectorAll('[data-feed-method]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (feedBusy) return;
+      const key = btn.dataset.feedMethod;
+      // Re-clicking the already-selected card is a no-op, NOT a silent wipe of
+      // the pool just built (pool-builder's own code-review fix). Under a recall
+      // lock the same click releases the lock and keeps the recalled values,
+      // which is what taking ownership of that pool should mean.
+      if (key === feedSel.method) {
+        if (feedSel.poolLocked) { feedSel.poolLocked = false; redraw(); }
+        return;
+      }
+      feedSel.method = key;
+      // A method's own violence default only applies while the player has not
+      // explicitly chosen one; `violencePreset` is TM Story's own flag for that,
+      // and this tab's equivalent is "violence is still unset".
+      if (feedSel.violence == null) feedSel.violence = violenceDefaultFor(storyTemplates, key);
+      feedSel.poolAttr = '';
+      feedSel.poolSkill = '';
+      feedSel.poolDisc = '';
+      feedSel.poolSpecChip = null;
+      // THE ONLY PLACE THE LOCK IS EVER CLEARED: picking a card is the player
+      // building a pool of their own, so a recalled pool's borrowed pre-approval
+      // no longer describes what is on screen.
+      feedSel.poolLocked = false;
+      feedNotice = null;
+      redraw();
+    });
+  });
+
+  root.querySelector('[data-feed-method-recall-use]')?.addEventListener('click', () => {
+    if (feedBusy || !storyRecall) return;
+    // Already active: idempotent, matching the no-op guard the other cards use.
+    if (feedSel.poolLocked) return;
+    feedSel.method = storyRecall.method;
+    feedSel.poolAttr = storyRecall.poolAttr;
+    feedSel.poolSkill = storyRecall.poolSkill;
+    feedSel.poolDisc = storyRecall.poolDisc;
+    // A recalled method that resolves to a real template puts the pool into
+    // TEMPLATE mode, which renders no specialisation chip at all - restoring the
+    // chip there would be an invisible, un-toggleable +1.
+    feedSel.poolSpecChip = templateForMethod(storyTemplates, storyRecall.method) ? null : storyRecall.poolSpecChip;
+    feedSel.bloodType = storyRecall.bloodType;
+    feedSel.violence = storyRecall.violence;
+    // THE ONLY PLACE THE LOCK IS EVER SET. Recall is the stricter lock: the pool
+    // is an already-approved answer being reused verbatim, not one rebuilt from
+    // a template's suggestions.
+    feedSel.poolLocked = true;
+    feedNotice = null;
+    redraw();
+  });
+
+  // Pool chips. `data-pb-skill` clears the specialisation, because a spec
+  // belongs to the skill it was picked under (pool-builder.js:212).
+  root.querySelectorAll('[data-pb-attr]').forEach(c => c.addEventListener('click', () => {
+    if (feedBusy) return; feedSel.poolAttr = c.dataset.pbAttr; redraw();
+  }));
+  root.querySelectorAll('[data-pb-skill]').forEach(c => c.addEventListener('click', () => {
+    if (feedBusy) return; feedSel.poolSkill = c.dataset.pbSkill; feedSel.poolSpecChip = null; redraw();
+  }));
+  root.querySelectorAll('[data-pb-disc]').forEach(c => c.addEventListener('click', () => {
+    if (feedBusy) return; feedSel.poolDisc = c.dataset.pbDisc; redraw();
+  }));
+  root.querySelectorAll('[data-pb-spec]').forEach(c => c.addEventListener('click', () => {
+    if (feedBusy) return;
+    feedSel.poolSpecChip = feedSel.poolSpecChip === c.dataset.pbSpec ? null : c.dataset.pbSpec;
+    redraw();
+  }));
+
+  root.querySelectorAll('[data-feed-bt]').forEach(b => b.addEventListener('click', () => {
+    if (feedBusy) return; feedSel.bloodType = b.dataset.feedBt; redraw();
+  }));
+  root.querySelectorAll('[data-feed-vi]').forEach(b => b.addEventListener('click', () => {
+    if (feedBusy) return; feedSel.violence = b.dataset.feedVi; redraw();
+  }));
+
+  // The two-step commit: Roll -> irreversible warning -> Confirm/Cancel.
+  root.querySelector('[data-feeding-roll]')?.addEventListener('click', () => {
+    if (feedBusy) return;
+    feedRollConfirming = true;
+    redraw();
+  });
+  root.querySelector('[data-feeding-roll-confirm]')?.addEventListener('click', doFeedingRoll);
+  root.querySelector('[data-feeding-roll-cancel]')?.addEventListener('click', () => {
+    if (feedBusy) return;
+    feedRollConfirming = false;
+    redraw();
+  });
+
+  // Vessel boxes: click box N to fill to N; click the current top box to drop to
+  // N-1 (`sections/feeding.js:825-834`).
+  root.querySelectorAll('.vd-boxes button.vd-box').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (feedBusy || !Array.isArray(feedVesselDraft)) return;
+      const idx = Number(btn.closest('.vd-boxes')?.dataset.vesselIdx);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= feedVesselDraft.length) return;
+      const boxNum = Number(btn.dataset.box);
+      const cur = feedVesselDraft[idx] || 0;
+      feedVesselDraft[idx] = cur === boxNum ? boxNum - 1 : boxNum;
+      redraw();
+    });
+  });
+
+  // Aggravated boxes: the same fill-level idiom, deliberately mirroring the
+  // vessel strip rather than independent per-box toggles.
+  root.querySelectorAll('button[data-agg-box]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      if (feedBusy) return;
+      const boxNum = Number(btn.dataset.aggBox);
+      feedAggDraft = feedAggDraft === boxNum ? boxNum - 1 : boxNum;
+      redraw();
+    });
+  });
+
+  root.querySelector('[data-feeding-declare]')?.addEventListener('click', doFeedingDeclaration);
+}
+
 function wireEvents() {
   if (!container) return;
 
-  // Generic method selection
-  container.querySelectorAll('[data-feed-method]').forEach(btn => {
+  wireStoryFeedEvents();
+
+  // Generic method selection (the residual TM-Game-sourced picker only - scoped
+  // to `.feeding-no-sub` so it can never catch the Story 12.7 picker's own
+  // `data-feed-method` buttons, which live under `.feeding-story-flow` and mean
+  // something entirely different).
+  container.querySelectorAll('.feeding-no-sub [data-feed-method]').forEach(btn => {
     btn.addEventListener('click', () => {
       selectedMethodId = btn.dataset.feedMethod;
       selectedDisc = '';
@@ -1635,7 +2493,23 @@ function wireEvents() {
   container.querySelector('#fvc-confirm')?.addEventListener('click', doConfirmAllocation);
 
   // Roll button
-  container.querySelector('#feeding-roll-btn')?.addEventListener('click', doFeedingRoll);
+  // Story 12.7 (AC 6): the residual TM-Game-sourced roll button. It used to roll
+  // dice here and PUT the result to `tm_game.downtime_submissions` - a write that
+  // has silently no-opped since Epic 8, losing the roll on the next refresh. That
+  // is exactly the bug this story exists to remove, so the write is gone.
+  //
+  // The button is still RENDERED, because these states only happen when TM Story
+  // could not be reached at all, and a tab that simply omits its own primary
+  // control at that moment tells the player nothing. Clicking it now says what is
+  // actually wrong and where the roll really lives.
+  container.querySelector('#feeding-roll-btn')?.addEventListener('click', () => {
+    feedNotice = {
+      kind: 'error',
+      text: 'Your feeding roll is recorded by the downtime service, and this tab could not reach it just now. '
+        + 'Nothing has been rolled. Reload the page to try again, or roll in your downtime form.',
+    };
+    render();
+  });
 
   // ST re-roll
   container.querySelector('#feeding-reroll-btn')?.addEventListener('click', async () => {
@@ -1882,69 +2756,158 @@ async function doConfirmAllocation() {
   render();
 }
 
-function rollDiceRote(n, again = 10) {
-  const r1 = rollDice(n, again), r2 = rollDice(n, again);
-  return cntSuc(r1) >= cntSuc(r2) ? r1 : r2;
-}
-
+/**
+ * Story 12.7 (AC 6/AC 7): commit the roll to TM Story, then redraw from what TM
+ * Story says is stored.
+ *
+ * The old body of this function rolled dice locally and wrote the result to
+ * `PUT /api/downtime_submissions/:id` — a collection that has held nothing since
+ * Epic 8, so the write silently no-opped and the roll vanished on refresh. Both
+ * halves are gone.
+ *
+ * WHAT TRAVELS: trait picks only. Never a pool total, never dice, never a
+ * signature. AC 2 rules that the route reads the real character, the relevant
+ * territory and the submission's own project slots server-side and derives the
+ * effective pool itself, then calls TM Story's own `rollPool()`.
+ *
+ * WHAT COMES BACK IS NOT TRUSTED AS FINAL (AC 7): the response is discarded and
+ * the whole sub-document is re-read through `fetchStoryFeeding()`, so the tab
+ * renders what is genuinely stored rather than what it hoped it had written.
+ */
 async function doFeedingRoll() {
-  if (poolTotal <= 0) return;
+  if (feedBusy || !currentChar || !activeCycleId || !feedSel) return;
+  const gate = currentRollGate();
+  if (!gate.available) return;
 
-  const cols = stRote ? rollDiceRote(poolTotal, stAgain) : rollDice(poolTotal, stAgain);
-  const method = declaredMethod || FEED_METHODS.find(m => m.id === selectedMethodId) || null;
-  // dtlt.1: the rote comparison inside rollDiceRote stays rolled-only (which
-  // pool's dice came up better); the bonus is added once, here, to the winner.
-  // Review fix (Codex, external, dtlt.1): only resolve real trait names when
-  // poolTotal was actually built from this method's own attrs/skills. On an
-  // ST-confirmed pool, declaredMethod may be a stale/different method than
-  // what the ST actually confirmed (feeding_roll.params carries no trait
-  // names at all; a parsed pool_validated size doesn't either) — passing it
-  // anyway could fire (or miss) a bonus-success rule on the wrong attribute.
-  // An empty context matches no roll_attr/roll_skill predicate, which is the
-  // safe default: no bonus, same as before this story, rather than a wrong one.
-  const traits = poolTraitsTrusted
-    ? bestTraitsFor(currentChar, method)
-    : { attr: '', skill: '' };
-  const outcome = resolveSuccesses(cols, currentChar, {
-    attr: traits.attr,
-    skill: traits.skill,
-    disc: poolTraitsTrusted ? (declaredDisc || selectedDisc || '') : '',
-    spec: poolTraitsTrusted ? (declaredSpec || selectedSpec || '') : '',
-  });
-  const successes = outcome.total;
-  const methodName = method?.name || 'Unknown';
-  const usedDisc = !!(declaredDisc || selectedDisc);
+  feedBusy = true;
+  feedNotice = null;
+  render();
 
-  rollResult = {
-    cols,
-    successes,
-    // Kept apart so a future rule that must ignore bonus successes (Merits
-    // Errata:693) can read the rolled count off a persisted roll.
-    rolledSuccesses: outcome.rolled,
-    bonusSuccesses: outcome.bonus,
-    vessels: successes,
-    safeVitae: successes * 2,
-    methodName,
-    pool: poolTotal,
-    again: stAgain,
-    breakdown: poolBreakdown,
-    successBreakdown: formatSuccessBreakdown(outcome),
-    rolledAt: new Date().toISOString(),
-    dramaticFailure: usedDisc && outcome.rolled === 0,
-  };
+  const charSnapshot = currentChar;
+  const cycleSnapshot = activeCycleId;
+  const paneSnapshot = container;
+  const res = await postStoryFeedingRoll(String(charSnapshot._id), cycleSnapshot, rollRequestBody());
 
-  feedingState = 'rolled';
+  // A character switch, a cycle change or a re-mount while the POST was in
+  // flight: the write still happened for the right character, but it must not
+  // be applied to a view it was never about (the same snapshot discipline the
+  // ST confirm handler already uses).
+  if (currentChar !== charSnapshot || activeCycleId !== cycleSnapshot || container !== paneSnapshot) return;
 
-  // Persist to DB (sole lock source — no localStorage)
-  if (responseSubId) {
-    try {
-      await apiPut(`/api/downtime_submissions/${responseSubId}`, { feeding_roll_player: rollResult });
-    } catch {
-      alert('Roll saved locally but could not be recorded to the server. Please refresh and try again, or contact your Storyteller.');
-    }
+  feedRollConfirming = false;
+  if (!res.ok) {
+    feedNotice = { kind: 'error', text: feedWriteFailureText(res, 'roll') };
+    feedBusy = false;
+    render();
+    return;
   }
 
+  await reloadStoryFeeding(charSnapshot, cycleSnapshot, paneSnapshot);
+}
+
+/**
+ * Story 12.7: commit the vessel feed and the vitae heal together.
+ *
+ * One write, one sitting — Angelus's own ruling that once the roll exists both
+ * open at the same time rather than being gated one at a time across separate
+ * visits. Same no-optimism discipline as the roll: re-read afterwards.
+ */
+async function doFeedingDeclaration() {
+  if (feedBusy || !currentChar || !activeCycleId || !Array.isArray(feedVesselDraft)) return;
+
+  feedBusy = true;
+  feedNotice = null;
   render();
+
+  const charSnapshot = currentChar;
+  const cycleSnapshot = activeCycleId;
+  const paneSnapshot = container;
+  const res = await postStoryFeedingDeclaration(String(charSnapshot._id), cycleSnapshot, {
+    vesselVitae: feedVesselDraft.map(v => Math.max(0, Math.trunc(Number(v) || 0))),
+    aggHealed: Math.max(0, Math.trunc(Number(feedAggDraft) || 0)),
+  });
+
+  if (currentChar !== charSnapshot || activeCycleId !== cycleSnapshot || container !== paneSnapshot) return;
+
+  if (!res.ok) {
+    feedNotice = { kind: 'error', text: feedWriteFailureText(res, 'feed') };
+    feedBusy = false;
+    render();
+    return;
+  }
+
+  await reloadStoryFeeding(charSnapshot, cycleSnapshot, paneSnapshot);
+}
+
+/**
+ * Re-read the feeding sub-document and redraw from it (AC 7).
+ *
+ * Shared by both writes above. A failed RE-READ after a successful write is not
+ * a failed write, and is not reported as one: the tab says plainly that the save
+ * went through but the refreshed view could not be fetched.
+ */
+async function reloadStoryFeeding(charSnapshot, cycleSnapshot, paneSnapshot) {
+  const fresh = await fetchStoryFeeding(String(charSnapshot._id), cycleSnapshot);
+  if (currentChar !== charSnapshot || activeCycleId !== cycleSnapshot || container !== paneSnapshot) return;
+
+  feedBusy = false;
+  if (!fresh.ok) {
+    feedNotice = {
+      kind: 'error',
+      text: 'Saved, but the tab could not read your feeding back just now. Reload the page to see it.',
+    };
+    render();
+    return;
+  }
+
+  // Same shape guard the first read uses: a 2xx whose body is not this route's
+  // own shape is not evidence of anything, and must not be allowed to wipe the
+  // declaration off the screen.
+  const body = (fresh.data && typeof fresh.data === 'object' && !Array.isArray(fresh.data) && 'feeding' in fresh.data)
+    ? fresh.data : null;
+  if (!body) {
+    feedNotice = {
+      kind: 'error',
+      text: 'Saved, but the tab could not read your feeding back just now. Reload the page to see it.',
+    };
+    render();
+    return;
+  }
+  storyFeedRaw = body.feeding ?? null;
+  storyTerritoryInfluence = body.territory_influence ?? null;
+  if (isUsableStoryRoll(storyFeedRaw)) {
+    storyFeeding = normaliseStoryFeeding(storyFeedRaw);
+    feedingState = 'rolled-from-form';
+  } else {
+    storyFeeding = null;
+    feedingState = 'story-feed';
+  }
+  initFeedSelection();
+  render();
+}
+
+/** One sentence per real failure mode. Never a bare "something went wrong". */
+function feedWriteFailureText(res, what) {
+  // TM Story's own message, when it sent one, is the useful half of a refusal.
+  if (res.detail) return res.detail;
+  switch (res.reason) {
+    case 'conflict':
+      return 'This feeding has already been rolled. Reload the page to see the result.';
+    case 'refused':
+      return what === 'roll'
+        ? 'The downtime service refused this pool. A genuinely custom pool can only be declared in the downtime form, where a Storyteller can rule on it.'
+        : 'The downtime service refused this declaration.';
+    case 'unauthorised':
+      return 'Your login is not accepted by the downtime service. Sign out and back in, then try again.';
+    case 'not-found':
+      return 'The downtime service has no record to save this against. Contact your Storyteller.';
+    case 'no-token':
+      return 'You are not signed in. Sign in and try again.';
+    case 'network':
+      return 'Could not reach the downtime service. Nothing was saved. Check your connection and try again.';
+    default:
+      return 'The downtime service could not save this. Nothing was recorded. Try again in a moment.';
+  }
 }
 
 // ── ST: Influence spend pre-fill ──

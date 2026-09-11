@@ -4424,6 +4424,155 @@ html:not([data-theme="dark"]) .sk-spec-row  span { color: var(--crim) !important
 .feeding-disc-row { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
 .feeding-disc-row label { font-size:0.8125rem; color: var(--txt2); white-space: nowrap; }
 
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Story 12.7 — the Feeding tab's ported TM Story decision surface.
+
+   Every rule below is copied from TM Story's own public/css/downtime-form.css
+   (line numbers as of 2026-09-11) and cross-checked against the locked mockup
+   at TM Admin/specs/mockups/tm-game-feeding-tab-parity/index.html, whose class
+   names are literal requirements rather than examples. No new custom property
+   is introduced and no colour is hardcoded: every value is an existing token
+   from this repo's own theme.css, which Story 12.4 already brought into step.
+
+   WHY IT IS SCOPED TO `.feeding-story-flow`. Several of these class names
+   already exist in this repo meaning something else - `.dt-feed-card` is the
+   legacy downtime form's own method card, `.feeding-roll-btn` is a full-width
+   crimson block, `.feeding-pool-display` is a bordered flex row, `.qf-select`
+   is a full-width 15px parchment control. Those rules still serve the residual
+   TM-Game-sourced states rendered right beside this one, so they are left
+   untouched and this block wins inside the ported surface only, by parent
+   specificity. The mockup's own `.panel`/`.panel-title` scaffolding is NOT
+   ported - that file labels it "mockup-only scaffolding", not a real class.
+
+   The three `--space-*` lengths TM Story's own rules use do not exist in this
+   repo's token set, so they appear here as the literal values that token block
+   holds (space-1 4px, space-3 8px, space-5 14px) rather than as a new custom
+   property invented to carry them.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* --- structural wrapper (this repo's own; the mockup's `.panel` is not a real
+   class and is deliberately not ported) --- */
+.feeding-story-flow { display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.feeding-story-flow > * { margin-top: 0; }
+
+/* --- downtime-form.css:261 --- */
+.feeding-story-flow .qf-explainer { font-style: italic; color: var(--txt3); margin: 4px 0 8px; font-size: 12.5px; }
+
+/* --- downtime-form.css:834 --- */
+.feeding-story-flow .dt-vitae-title { font-family: var(--type-heading); font-size: 12px; color: var(--gold2); margin-bottom: 8px; margin-top: 10px; text-transform: uppercase; letter-spacing: .05em; }
+
+/* --- the pool selects. TM Story's own (downtime-form.css's .qf-select, its
+   base form rules) is auto-width with a 140px floor, NOT this repo's
+   full-width parchment input. --- */
+.feeding-story-flow .qf-select {
+  width: auto; min-width: 140px;
+  font-family: var(--fl); font-size: 14px; color: var(--txt);
+  background: var(--bg); border: 1px solid var(--bdr2); border-radius: var(--radius-sm); padding: 8px;
+}
+/* `!important` here is not decoration and not a specificity shortcut: suite.css
+   loads AFTER this file and carries `#t-feeding .qf-select { background/color/
+   border: ... !important }` (its parchment-to-dark override). background and
+   border happen to land on the same tokens the mockup's disabled state wants;
+   `color` does not, and only `!important` can take that one back. */
+.feeding-story-flow .qf-select:disabled {
+  background: var(--surf2) !important; color: var(--txt2) !important; border-color: var(--bdr2) !important;
+  cursor: not-allowed; opacity: 1;
+}
+
+/* --- downtime-form.css:489-490 --- */
+.feeding-story-flow .qf-btn-ghost { background: none; border: 1px dashed var(--bdr2); color: var(--txt3); font-family: var(--fl); font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; padding: 6px 12px; border-radius: var(--radius-sm); cursor: pointer; }
+.feeding-story-flow .qf-btn-ghost:hover { color: var(--txt); border-color: var(--txt3); }
+
+/* --- chips (downtime-form.css:418-436). The compound `.chip.chip--suggest`
+   selector is TM Story's own, and so is `.chip--suggest.chip--on` - that pair
+   is a self-caught specificity regression there, not decoration. --- */
+.feeding-story-flow .chip { display: inline-flex; align-items: center; border: 1px solid; }
+.feeding-story-flow .chip.chip--suggest { border-color: var(--bdr2); background: var(--surf1); color: var(--txt2); border-radius: var(--radius-lg); padding: 2px 9px; font-size: 12px; cursor: pointer; font-family: revert; }
+.feeding-story-flow .chip--suggest.chip--on { background: var(--gold); color: var(--bg); border-color: var(--gold); }
+.feeding-story-flow .chip.chip--suggest:disabled { cursor: default; }
+.feeding-story-flow .dt-suggest-chip-disc { font-style: italic; }
+
+/* --- pool builder (downtime-form.css:405-411) --- */
+.feeding-story-flow .dt-pool-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 6px 0; }
+.feeding-story-flow .dt-pool-total { font-family: var(--type-heading); font-weight: 700; color: var(--gold2); font-size: 16px; margin-left: 4px; }
+.feeding-story-flow .dt-pool-valid { color: var(--good); font-size: 12.5px; }
+.feeding-story-flow .dt-pool-review { color: var(--warn); font-size: 12.5px; }
+.feeding-story-flow .dt-suggest-row { font-size: 12px; color: var(--txt3); margin: 6px 0; display: flex; flex-wrap: wrap; gap: 4px; align-items: center; }
+.feeding-story-flow .dt-suggest-label { font-weight: 600; }
+.feeding-story-flow .dt-suggest-sep { color: var(--bdr3); }
+.feeding-story-flow .dt-feed-spec-none { color: var(--txt3); font-size: 12px; font-style: italic; }
+
+/* --- method cards (downtime-form.css:705-781, plus the mockup's own
+   `.dt-feed-card-grid`, which is the grid TM Story expresses as
+   `.dt-feed-methods`). `display:block; width:100%; font:inherit;
+   color:inherit` are the mockup's own additions, needed because these are
+   <button>s carrying block children. --- */
+.feeding-story-flow .dt-feed-card-wrap { display: flex; flex-direction: column; gap: 14px; padding: 0; background: none; border: 0; }
+.feeding-story-flow .dt-feed-card-wrap > * + * { margin-top: 0; }
+.feeding-story-flow .dt-feed-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
+.feeding-story-flow .dt-feed-card {
+  padding: 10px; border-radius: var(--radius-md); border: 1px solid var(--bdr2);
+  background: var(--surf1); cursor: pointer; text-align: left; font: inherit; color: inherit;
+  display: block; width: 100%;
+}
+.feeding-story-flow .dt-feed-card:hover { border-color: var(--gdim); }
+.feeding-story-flow .dt-feed-card.dt-feed-sel { background: var(--surf2); border-color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.feeding-story-flow .dt-feed-card:disabled { opacity: .45; cursor: not-allowed; }
+.feeding-story-flow .dt-feed-card:disabled:hover { border-color: var(--bdr2); }
+.feeding-story-flow .dt-feed-card-name { display: block; font-family: var(--type-heading); font-size: 12.5px; color: var(--gold2); font-weight: 600; margin-bottom: 0; letter-spacing: normal; }
+.feeding-story-flow .dt-feed-card-desc { display: block; font-size: 11px; color: var(--txt3); margin-top: 3px; font-style: normal; }
+.feeding-story-flow .dt-feed-card-recall { border-style: dashed; }
+
+/* --- blood type / kiss-or-assault pills (downtime-form.css:778-781) --- */
+.feeding-story-flow .dt-feed-toggle-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.feeding-story-flow .dt-feed-vi-btn { padding: 6px 14px; border-radius: var(--radius-pill); border: 1px solid var(--bdr2); background: var(--surf1); color: var(--txt2); cursor: pointer; font-size: 12.5px; }
+.feeding-story-flow .dt-feed-vi-btn.dt-feed-vi-on { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+.feeding-story-flow .dt-feed-vi-btn:disabled { opacity: .5; cursor: not-allowed; }
+.feeding-story-flow .dt-feed-hint { font-size: 11px; color: var(--txt3); font-style: italic; margin-top: 4px; }
+
+/* --- the roll (downtime-form.css:842-866) --- */
+.feeding-story-flow .feeding-ready { display: flex; flex-direction: column; align-items: flex-start; gap: 8px; padding: 10px 12px; background: var(--surf2); border: 1px solid var(--good); border-radius: var(--radius-md); font-size: 12.5px; color: var(--txt2); margin: 6px 0; }
+.feeding-story-flow .feeding-warning { padding: 10px 12px; background: var(--surf1); border: 1px dashed var(--bdr3); border-radius: var(--radius-md); font-size: 12.5px; color: var(--txt3); font-style: italic; margin: 6px 0; }
+.feeding-story-flow .feeding-pool-display { display: block; padding: 0; margin: 0; background: none; border: 0; border-radius: 0; font-size: 12.5px; color: var(--txt2); }
+.feeding-story-flow .feeding-roll-btn { width: auto; margin-top: 0; font-family: var(--fl); font-weight: 700; font-size: 12px; text-transform: uppercase; letter-spacing: .04em; padding: 8px 16px; border-radius: var(--radius-sm); border: 1px solid var(--accent); background: var(--accent); color: var(--bg); cursor: pointer; }
+.feeding-story-flow .feeding-roll-btn:disabled { background: var(--surf3); border-color: var(--bdr2); color: var(--txt3); cursor: default; opacity: .8; filter: none; }
+.feeding-story-flow .feeding-roll-dice { justify-content: flex-start; margin: 0; }
+/* Not the neutral dashed warning, and not italic - a real, active confirmation
+   step, not passive status text (downtime-form.css:863-865). */
+.feeding-story-flow .feeding-roll-confirm { border: 1px solid var(--crim); border-style: solid; background: var(--surf1); font-style: normal; color: var(--txt); }
+[data-theme="dark"] .feeding-story-flow .feeding-roll-confirm { border-color: var(--crim-readable); }
+.feeding-story-flow .feeding-roll-confirm-actions { display: flex; gap: 8px; margin-top: 8px; }
+
+/* --- the write-failure / write-result notice. Not a TM Story class: TM Story's
+   form autosaves and has no equivalent failure to report. Built out of the same
+   `.feeding-warning` chrome so it reads as the same family, with the solid
+   crimson edge the confirm step already uses for "this needs your attention".
+   Dual-coded: the border is not the only signal, the sentence says what went
+   wrong. --- */
+.feeding-write-notice { padding: 10px 12px; background: var(--surf1); border: 1px solid var(--crim); border-radius: var(--radius-md); font-size: 12.5px; color: var(--txt); font-style: normal; margin: 6px 0; text-align: left; }
+[data-theme="dark"] .feeding-write-notice { border-color: var(--crim-readable); }
+
+/* --- "Locked from downtime" tag. The one piece of the mockup's own chrome that
+   is a real, load-bearing element rather than review scaffolding: it is what
+   tells a player why their approach has no controls. --- */
+.feeding-story-flow .lock-tag {
+  font-family: var(--fl); font-size: 10px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--txt3); background: var(--surf1); border: 1px solid var(--bdr);
+  border-radius: var(--radius-pill); padding: 2px 8px;
+  display: inline-flex; align-items: center; gap: 4px; margin-bottom: 8px; align-self: flex-start;
+}
+
+/* --- vessel + aggravated strips. The base rules are already in this file
+   (Story 12.4's port); these two only restore the INTERACTIVE affordance that
+   port deliberately took off, because those boxes are now genuinely clickable
+   here. --- */
+.feeding-story-flow button.vd-box { cursor: pointer; }
+.feeding-story-flow button.vd-box:hover { border-color: var(--crim); }
+.feeding-story-flow button.vd-box:focus-visible,
+.feeding-story-flow button.dt-agg-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.feeding-story-flow .vd-summary { text-align: left; }
+
 /* ── Regency tab ── */
 
 .regency-wrap { max-width: 560px; margin: 0 auto; }
