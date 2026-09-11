@@ -1956,3 +1956,35 @@ actually changed (a CSS class rename) — Story 12.4's own dev pass attempted th
 it didn't work, but the external review's own direct verification found it does. Whoever picks this
 up should re-verify against the live file rather than trust either prior claim uncritically, then
 apply the fix and confirm both specs' real assertions execute (not just reach the phase-open state).
+
+## Deferred from: tm-admin.12.8 (feeding vessel-heal/tracker write-back) independent re-verification, 2026-09-11
+
+**`doFeedingDeclaration()` (the Save-click handler, `public/js/tabs/feeding-tab.js`) has no
+independent marker check of its own**, unlike the AC 14 fix applied to the ST-confirm handler in this
+same story (which guards the write in both the render AND the handler, "the second lock on the same
+door"). `doFeedingDeclaration()` relies entirely on `feedDeclarationLocked()` having kept the Save
+button un-rendered/un-clickable. Analysis at review time: real risk is low, because this app rebinds
+event listeners to freshly-rendered DOM elements on every `render()` call (no event delegation), so a
+detached/stale button cannot receive a genuine user click in a real browser — only a programmatic
+`.click()` on a retained node reference (exactly the "positive control" pattern the AC 14 test itself
+uses) could reach it, which is not a real user path. The `_feedingMarkerGuard` fix added to
+`applyFeedToTracker()` during this same review (server/routes/tracker.js's conditional write) happens
+to close the practical consequence anyway, since both `doFeedingDeclaration()` and
+`maybeReconcileFeed()` share that one function. Left here as a consistency note: if
+`doFeedingDeclaration()` is ever refactored to call something other than `applyFeedToTracker()`
+directly, re-add an explicit marker check at the top of the handler rather than assume the render
+gate is sufficient.
+
+**A zero-success feed against a character with zero EXISTING Aggravated damage renders no Save
+control at all in TM Game's Feeding tab** (`renderFeedDeclareControl()`'s own `!hasVessels &&
+!hasHealing` early return — `hasVessels` is false for a zero-success roll, `hasHealing` is false when
+`tracker.aggravated` is already 0). This is narrower than the already-documented "known narrowing"
+gap in `renderFeedAggHealing()` (which is about not being able to SPEND on healing pre-save): here,
+a player who fed for zero successes but has a real, positive `vitaeProjection().net` (territory
+ambience plus Herd/Flock) and no Aggravated damage to heal has no way to trigger ANY declaration
+through this tab at all — not even a "no vessels, no healing, just bank the Vitae" save — and must
+record it through TM Story's own downtime form instead. Low severity (a real, working correction
+route exists), not fixed as part of this story since the button's own gating logic would need a
+third condition (a positive server-estimated total) that this tab cannot compute pre-save without
+either a dedicated probe endpoint or the same pre-save-`fedTotal` gap already named in the "known
+narrowing" comment. Revisit alongside that gap if it's ever closed.

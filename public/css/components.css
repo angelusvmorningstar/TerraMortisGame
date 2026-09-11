@@ -4573,6 +4573,21 @@ html:not([data-theme="dark"]) .sk-spec-row  span { color: var(--crim) !important
 .feeding-story-flow button.dt-agg-box:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .feeding-story-flow .vd-summary { text-align: left; }
 
+/* --- Story 12.8 (AC 9b): the Save Vessel Feed control. Not a TM Story class -
+   its downtime form has no per-section save at all (its vessel and healing
+   panels mutate state and call onChange(); the whole form submits as one), so
+   there was nothing to port. The button itself carries this repo's own
+   `.qf-btn.qf-btn-submit`, the same treatment `#fvc-confirm`'s "Confirm
+   Allocation" already uses for exactly this action; this rule only gives the row
+   its own spacing and puts the write-once sentence under the button rather than
+   beside it. --- */
+.feeding-story-flow .feed-declare-row {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 8px;
+  margin-top: 14px;
+}
+.feeding-story-flow .feed-declare-row .qf-btn:disabled { opacity: .6; cursor: default; }
+.feeding-story-flow .feed-declare-row .feeding-state-detail { margin: 0; max-width: 46em; }
+
 /* ── Regency tab ── */
 
 .regency-wrap { max-width: 560px; margin: 0 auto; }

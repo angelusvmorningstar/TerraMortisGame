@@ -35,6 +35,29 @@
  *
  * Story 12.3 adds one thing that belongs to no state: a standing Influence +
  * Willpower tally card, rendered in every state except loading.
+ *
+ * WHAT CHANGED IN STORY 12.8. Story 12.7 shipped the roll and then GATED the
+ * other half: `doFeedingDeclaration()` had been wired against a
+ * `POST .../feeding/declaration` route TM Story did not serve, so the Save
+ * control was replaced by an "arriving in a follow-up story" placeholder
+ * (`5fdf096c`). That route now exists, and this file does three things it did
+ * not:
+ *   1. the Save control is real and reachable again (`renderFeedDeclareControl`),
+ *      WRITE-ONCE by ruling - one save per cycle, no edit affordance, TM Story's
+ *      downtime form remains the only correction route;
+ *   2. a recorded feed is APPLIED to the character's own `tracker_state` -
+ *      Vitae as a clamped delta-add matching `trackerAdj()`'s shape, Aggravated
+ *      as the same delta the ST-confirm panel already computes - as a
+ *      RECONCILIATION on every tab load (`maybeReconcileFeed`), not only on the
+ *      click, so a feed recorded in TM Story's own form applies too;
+ *   3. one durable marker (`AGG_HEALED_MARKER`) now gates BOTH halves of that
+ *      write instead of Aggravated alone, and the ST-confirm panel respects it
+ *      in its handler as well as its render, closing the double-apply path.
+ *
+ * The healing budget rendered and applied is the SERVER'S own `fedTotal`, off
+ * the declaration route's response - never a second derivation here. See
+ * `renderFeedAggHealing()` for the one bounded case where a client-side floor is
+ * still shown, and why closing it is deliberately out of scope.
  */
 
 import { apiGet, apiPut, apiRaw } from '../data/api.js';
@@ -203,6 +226,28 @@ let feedRollConfirming = false;
 let feedVesselDraft = null;
 let feedAggDraft = 0;
 let feedVesselsCommitted = false;
+// ── Story 12.8 ───────────────────────────────────────────────────────────────
+// "A declaration is on file for this cycle", which is NOT the same fact as
+// `feedVesselsCommitted` above. That flag is sourced from `vesselVitae.length > 0`
+// (:1547/:1594) and answers "is there a stored vessel array to render". A
+// genuinely resolved ZERO-SUCCESS feed declares no vessels at all (TM Story's own
+// vessel gate, `sections/feeding.js:689`, hides the strip entirely below one
+// success) while still carrying a real healing budget off `vitaeProjection().net`
+// (data-lock #6) - so for that feed `vesselVitae` is `[]` for ever and the vessel
+// flag can never latch. This one is the WRITE-ONCE latch (AC 9b, RULED: "TM Game
+// stays write-once"), and it latches on either half of the declaration.
+let feedDeclCommitted = false;
+// The server's own derived `fedTotal` for this cycle's declaration (AC 9a), as
+// returned by `POST .../feeding/declaration`. null means "not obtained yet".
+// NEVER re-derived here: TM Story's real total is the vessel draws PLUS
+// `vitaeProjection().net` (`sections/feeding.js:892`), and porting that
+// projection into a second app is the exact failure class Story 12.7's AC 2
+// doctrine exists to prevent.
+let feedServerFedTotal = null;
+// Set for the duration of a reconciliation, so a load-triggered apply and a
+// save-triggered apply cannot both write the same feed. Module state, not a DOM
+// flag, for the same reason `_confirmInFlight` is (see its comment at :2586).
+let _feedApplyInFlight = false;
 
 // `cycleId` is explicit so an in-flight write can key its own result against
 // the cycle it STARTED in (review fix, Codex, external, third round, Medium),
@@ -270,6 +315,12 @@ export async function renderFeedingTab(el, char) {
   feedVesselDraft = null;
   feedAggDraft = 0;
   feedVesselsCommitted = false;
+  // Story 12.8: reset with everything else. `_feedApplyInFlight` deliberately is
+  // NOT reset here - an apply already in flight is keyed by character id and
+  // must be allowed to finish (AC 11), and clearing its guard mid-flight would
+  // let a second one start on top of it.
+  feedDeclCommitted = false;
+  feedServerFedTotal = null;
 
   // Fetch live territory ambience from DB (used by computeVitateTally)
   let liveTerrDocs = [];
@@ -403,6 +454,13 @@ export async function renderFeedingTab(el, char) {
     initFeedSelection();
     mountFeedingPanes(el, char);
     render();
+    // Story 12.8 (AC 9): THE RECONCILIATION. Deliberately after the first
+    // render - the tab draws immediately from what TM Story holds, and the
+    // tracker application (which may need a round-trip of its own) settles
+    // behind it and redraws. This is the ONLY branch it runs from, because a
+    // committed declaration cannot exist without a usable roll, and a usable
+    // roll is exactly what puts the tab in this state.
+    await maybeReconcileFeed(charSnapshot, activeCycleId, container);
     return;
   }
 
@@ -622,6 +680,12 @@ function trackerFigures() {
     // No document: the server has never been told otherwise, so the character
     // is at full Willpower and Influence with no damage and no marker.
     return {
+      // Story 12.8: `defaults()` (`../game/tracker.js:35-43`) is this app's own
+      // answer for a character nothing has ever written tracker state for, and
+      // its answer for Vitae is the maximum, not zero. Followed here rather than
+      // invented: a delta-add onto it simply clamps back to the maximum, so an
+      // undocumented character can never have a feed inflate them past full.
+      vitae: calcVitaeMax(currentChar),
       willpower: calcWillpowerMax(currentChar),
       inf: calcTotalInfluence(currentChar),
       aggravated: 0,
@@ -634,6 +698,11 @@ function trackerFigures() {
   // Willpower 1.
   const num = (v, fallback) => { const n = _strictNum(v); return n === null ? fallback : n; };
   return {
+    // Story 12.8: `vitae` is read here for the same reason every other figure is
+    // - the automatic feed application (AC 9) is a CLAMPED DELTA-ADD onto the
+    // character's real current Vitae, so it needs the real current Vitae, from
+    // the same live read everything else on this tab uses.
+    vitae: num(trackerDoc.vitae, calcVitaeMax(currentChar)),
     willpower: num(trackerDoc.willpower, calcWillpowerMax(currentChar)),
     inf: num(trackerDoc.influence, calcTotalInfluence(currentChar)),
     aggravated: Math.max(0, Math.trunc(num(trackerDoc.aggravated, 0))),
@@ -1312,7 +1381,32 @@ function renderStConfirmPanel({ stDefault, aggHealed = 0, formSourced = false })
       + '</p></div>';
   }
   const aggApplied = !!activeCycleId && !!ts && ts.marker === activeCycleId;
+  // Story 12.8 (AC 14): the marker now gates BOTH components of the write, not
+  // just Aggravated (AC 10), so on a form-sourced feed a matching marker means
+  // the whole feed - Vitae included - has already been applied, either by an ST
+  // through this panel or automatically by `maybeReconcileFeed()`. Left as it
+  // was, an ST opening the tab after a player's self-service feed would see a
+  // live, pre-filled Confirm button and could double-apply Vitae on top of the
+  // automatic write (data-lock #10): `_stConfirmed` is in-memory only and does
+  // not survive a reload, and `aggApplied` suppressed one row, not the panel.
+  //
+  // Scoped to `formSourced` deliberately. The legacy tm_game-sourced roll path's
+  // behaviour is explicitly out of scope for this story ("unchanged, still real,
+  // still needed there"), and it is reached only when TM Story cannot be read at
+  // all - where a marker left by some earlier, unrelated apply must not remove
+  // the ST's only control.
+  const feedApplied = formSourced && aggApplied;
   let h = `<div class="feed-st-confirm">`;
+  if (feedApplied && !confirmed) {
+    h += '<div class="feed-confirmed-record" id="feed-already-applied">'
+      + '✓ This cycle\'s feed has already been applied to the tracker'
+      + (aggHealed > 0 ? `  |  Agg −${aggHealed}` : '')
+      + '</div>';
+    h += '<p class="feeding-state-detail">Vitae and Aggravated were written when the feed was recorded, so there is '
+      + 'nothing left to confirm. Adjust the tracker directly if a correction is needed.</p>';
+    h += `</div>`;
+    return h;
+  }
   if (confirmed) {
     const vitaeStr = confirmed.vitaeMax != null
       ? `Vitae ${confirmed.vitae}/${confirmed.vitaeMax}`
@@ -1592,6 +1686,11 @@ function initFeedSelection() {
     territory: d.territory,
   };
   feedVesselsCommitted = d.vesselsDeclared;
+  // Story 12.8 (AC 9b): the write-once latch. Either half of the declaration
+  // being on file means the player has already had their one save - see the
+  // flag's own comment at the top of this file for why the vessel array alone
+  // is not a sufficient test.
+  feedDeclCommitted = d.vesselsDeclared || d.aggHealed > 0;
   feedVesselDraft = null;
   feedAggDraft = d.aggHealed;
   feedRollConfirming = false;
@@ -1876,10 +1975,28 @@ function renderFeedRollStatus() {
 
 // ── vessel drain (sections/feeding.js:682-836) ────────────────────────────────
 
-/** Is there a resolved feed to draw vessels from at all? */
+/**
+ * Is there a resolved feed at all?
+ *
+ * Story 12.8 (AC 9b, data-lock #12, RULED by Angelus 2026-09-11: "match the
+ * form"): the `rr.successes <= 0` term this used to carry is GONE. It was never
+ * TM Story's gate for a resolved feed - `sections/feeding.js:875` is
+ * `!!r && !r.chance && !r.dramatic_failure`, with no successes term at all, and
+ * `renderFeedAggHealing()` in this very file already used that gate correctly.
+ * The narrowed copy here made this tab disagree with both: on a zero-success
+ * roll with a positive `vitaeProjection().net` (a genuinely live-reachable case -
+ * territory ambience plus Herd/Flock can carry a real healing budget off a feed
+ * that secured no vessel), TM Story's own form offers a healing panel and this
+ * tab rendered nothing at all, not even Story 12.7's placeholder, because
+ * `renderStoryFeedFlow()`'s own branch called this same narrowed gate.
+ *
+ * The VESSEL strip keeps its own separate successes check - see
+ * `renderFeedVesselDrain()` below, which ports TM Story's genuinely different
+ * vessel gate (`sections/feeding.js:689`) rather than sharing this one.
+ */
 function feedResolvedRoll() {
   const rr = storyFeeding?.rollResult || null;
-  if (!rr || rr.chance || rr.dramatic_failure || rr.successes <= 0) return null;
+  if (!rr || rr.chance || rr.dramatic_failure) return null;
   return rr;
 }
 
@@ -1891,7 +2008,13 @@ function feedVesselView() {
   const committed = feedVesselsCommitted;
   if (!committed && !Array.isArray(feedVesselDraft)) {
     // One 7-box track per success, or a single shared pool for an animal feed.
-    feedVesselDraft = animal ? [0] : new Array(rr.successes).fill(0);
+    // Story 12.8: a feed that secured no successes has no vessels and no animal
+    // pool either (`rr.successes * 3` is 0), so the draft is an empty array in
+    // both shapes rather than a one-entry pool with nothing in it. That is what
+    // travels to the declaration route for such a feed, and `normaliseVesselVitae`
+    // (`TM Story/public/js/downtime-form/content-shape.js:355-360`) keeps `[]`
+    // verbatim.
+    feedVesselDraft = animal ? (rr.successes > 0 ? [0] : []) : new Array(Math.max(0, rr.successes)).fill(0);
   }
   const drawn = committed ? (storyFeeding?.vesselVitae || []) : feedVesselDraft;
   return { rr, animal, committed, drawn, editable: !committed && !feedBusy };
@@ -1901,6 +2024,12 @@ function renderFeedVesselDrain() {
   const view = feedVesselView();
   if (!view) return '';
   const { rr, animal, committed, drawn, editable } = view;
+  // Story 12.8: TM Story's VESSEL gate genuinely does exclude a zero-success
+  // roll (`sections/feeding.js:689`, `r.successes <= 0` - the same line that
+  // clears `state.vesselVitae` for such a feed), unlike its healing gate at :875.
+  // Porting both faithfully means the two disagree here, exactly as they do
+  // there: no vessel strip below one success, but a healing panel still offered.
+  if (!committed && rr.successes <= 0) return '';
   const total = drawn.reduce((a, b) => a + b, 0);
 
   // Animal blood: ONE shared pool of 3 Vitae per success, not one vessel per
@@ -1960,15 +2089,41 @@ function renderFeedAggHealing() {
   // unknown, and a fabricated zero-box state would be worse than an honest gap.
   if (!ts || ts.aggravated <= 0) return '';
 
-  const committed = feedVesselsCommitted;
+  const committed = feedDeclCommitted;
   const drawn = committed ? (storyFeeding?.vesselVitae || []) : (feedVesselDraft || []);
-  // KNOWN NARROWING, stated rather than hidden: TM Story's own budget is the
-  // vessel draws PLUS its Vitae Projection net (territory ambience, Herd,
-  // Flock). This tab has no equivalent projection for a TM-Story-sourced feed -
-  // the ST confirm panel below already says the bonus vitae is not tallied here
-  // and is added with the stepper - so the budget offered is the vessel draws
-  // alone. That is a floor on what the player may commit, never an overstatement.
-  const fedTotal = Math.max(0, drawn.reduce((a, b) => a + b, 0));
+  // Story 12.8 (AC 9a): THE SERVER'S OWN DERIVED TOTAL WINS, whenever one has
+  // been obtained. TM Story's real budget is the vessel draws PLUS
+  // `vitaeProjection().net` (`sections/feeding.js:892`), and the declaration
+  // route returns that figure in its response - so the moment a declaration has
+  // been sent (or re-sent during reconciliation, `maybeReconcileFeed()` below)
+  // this panel renders the number the server actually validated against.
+  //
+  // KNOWN NARROWING, and it now has a bounded life: BEFORE any declaration has
+  // been sent there is no server figure to render, and this tab still has no
+  // projection of its own, so the pre-save budget is the vessel draws alone.
+  // Data-lock #13 is explicit that this is only a FLOOR while the projection net
+  // is non-negative - the Barrens carries a real `ambienceMod` of -4
+  // (`sections/feeding.js:886-891`), so a Barrens feed can offer healing the
+  // server will refuse. That refusal is surfaced verbatim (`feedWriteFailureText`
+  // passes TM Story's own message straight through), never swallowed, and the
+  // panel redraws on the server's number afterwards. Porting
+  // `vitaeProjection()`/`herdFlockDots()` here to close the pre-save gap is
+  // explicitly out of scope for this story: one derivation, one owner.
+  //
+  // THE CONCRETE CONSEQUENCE, named rather than left to be discovered. Because
+  // the pre-save budget is the vessel draws alone, a feed whose whole budget
+  // comes from the projection net - a genuinely resolved ZERO-SUCCESS feed, the
+  // case data-lock #6 names and AC 9b's ruling re-opens - renders this panel with
+  // every box disabled: the client floor is 0, and this tab never offers a
+  // control that would produce a declaration the server refuses (TM Story's own
+  // convention, `sections/feeding.js:904-908`). Such a feed can still be SAVED,
+  // and its Vitae still reaches the tracker off the server's own total; what a
+  // player cannot do from this tab is spend it on healing. The downtime form,
+  // which has the projection in front of it, can. Closing that properly needs
+  // either a pre-save source for the server's figure or the projection ported
+  // here, and the story rules the second out.
+  const clientFloor = Math.max(0, drawn.reduce((a, b) => a + b, 0));
+  const fedTotal = feedServerFedTotal === null ? clientFloor : feedServerFedTotal;
   let healed = committed ? (storyFeeding?.aggHealed || 0) : feedAggDraft;
   // Clamp down if the draw fell after some healing was already committed (the
   // boxes above let the total drop at any time while this panel is open).
@@ -2033,36 +2188,102 @@ function renderStoryFeedFlow(isST) {
   h += renderFeedToggles();
   h += renderFeedRollStatus();
 
-  // GATED (2026-09-11, independent verification of Story 12.7): the write half of
-  // this panel (`doFeedingDeclaration()` / `POST .../feeding/declaration`) was
-  // built against a path TM Story does not serve - that work was split out to
-  // Story 12.8 (`depends_on: 12.7`, not yet built) and this route does not exist
-  // on the real server. Rendering the interactive draft + a "Save" button here
-  // would be a guaranteed 404 on a player's own primary action, tested green only
-  // because the Playwright spec mocks the endpoint. Already-committed data (real,
-  // recorded through the downtime form) still renders read-only below - that is a
-  // read, not a write, and stays live. Un-gate this the same day Story 12.8 ships
-  // its server route; do not flip it on speculatively.
-  if (feedVesselsCommitted) {
-    h += renderFeedVesselDrain();
-    h += renderFeedAggHealing();
-  } else if (feedResolvedRoll()) {
-    h += '<p class="qf-explainer">Vessel feed and Aggravated healing write-back from this tab is arriving in a follow-up story (12.8). Record it in the downtime form for now - your roll above is saved either way.</p>';
-  }
+  // UN-GATED, Story 12.8 (AC 9b). Story 12.7 shipped a placeholder here reading
+  // "arriving in a follow-up story (12.8)", because `doFeedingDeclaration()` had
+  // been wired against a `POST .../feeding/declaration` route TM Story did not
+  // serve - a guaranteed 404 on a player's own primary action. That route now
+  // exists, so the interactive draft and its Save control are real. The
+  // placeholder is gone rather than left dormant: a route with no reachable
+  // client is the same shape of problem, one layer up.
+  h += renderFeedVesselDrain();
+  h += renderFeedAggHealing();
+  h += renderFeedDeclareControl();
 
   h += '</div>';
 
-  // The ST's Confirm Feed panel, unchanged from Story 12.2 - the same single
-  // tracker_state write, over the same figures.
+  // The ST's Confirm Feed panel - the same single tracker_state write, over the
+  // same figures. Story 12.8 (AC 14) adds one thing to it and nothing else: an
+  // already-applied feed no longer renders a live Confirm control at all, in
+  // either the render or the handler (see `renderStConfirmPanel`).
   if (isST && rr) {
     const committedVessels = feedVesselsCommitted ? (storyFeeding?.vesselVitae || []) : [];
     h += renderStConfirmPanel({
       stDefault: committedVessels.reduce((a, b) => a + b, 0),
-      aggHealed: feedVesselsCommitted ? (storyFeeding?.aggHealed || 0) : 0,
+      aggHealed: feedDeclCommitted ? (storyFeeding?.aggHealed || 0) : 0,
       formSourced: true,
     });
   }
   return h;
+}
+
+/**
+ * Story 12.8 (AC 9b): the Save control the round-2 gate replaced.
+ *
+ * THE CONTROL WAS NEVER COMMITTED. Story 12.7's own commit (`5fdf096c`) left
+ * only the orphaned listener binding (`wireStoryFeedEvents()`, the
+ * `[data-feeding-declare]` line) with no element for it to find, so this is
+ * authored rather than un-commented. It is NOT a port of a TM Story control,
+ * because TM Story has none to port: its downtime form has no per-section save
+ * at all (`sections/feeding.js`'s vessel and healing panels both just mutate
+ * `state` and call `onChange()`; the whole form submits as one). The markup
+ * therefore follows THIS file's own established precedent for exactly this
+ * action - `#fvc-confirm`'s "Confirm Allocation" button, `qf-btn qf-btn-submit`
+ * (:2276) - and the locked mockup
+ * (`TM Admin/specs/mockups/tm-game-feeding-tab-parity/index.html`), which draws
+ * the vessel and aggravated panels this control sits under but stops short of
+ * any save affordance of its own.
+ *
+ * WRITE-ONCE, by ruling (Angelus, 2026-09-11, Open Question 6: "TM Game stays
+ * write-once"). There is no edit control and no re-save: once a declaration is
+ * on file for this cycle, this returns nothing at all, for ever. A correction is
+ * made in TM Story's downtime form, which is still live.
+ */
+function renderFeedDeclareControl() {
+  if (feedDeclarationLocked()) return '';
+  const rr = feedResolvedRoll();
+  if (!rr) return '';
+  // Nothing to declare: no vessel track to draw from (a zero-success feed) and
+  // no Aggravated damage to spend on either. An empty save is not an action.
+  const view = feedVesselView();
+  const hasVessels = !!view && view.drawn.length > 0;
+  const ts = trackerFigures();
+  const hasHealing = !!ts && ts.aggravated > 0;
+  if (!hasVessels && !hasHealing) return '';
+  return '<div class="feed-declare-row">'
+    + `<button type="button" class="qf-btn qf-btn-submit" data-feeding-declare${feedBusy ? ' disabled' : ''}>`
+    + `${feedBusy ? 'Saving…' : 'Save Vessel Feed'}</button>`
+    + '<p class="feeding-state-detail">Saving records this feed once and applies it to your Vitae and Aggravated '
+    + 'tracker straight away. It cannot be changed here afterwards, so use your downtime form if a correction is needed.</p>'
+    + '</div>';
+}
+
+/**
+ * Story 12.8 (AC 9b): is this cycle's feed already recorded?
+ *
+ * Three independent ways to be sure, because no single one covers every real
+ * case:
+ *   1. a stored declaration (either half - see `feedDeclCommitted`'s own comment
+ *      for why the vessel array alone is not enough);
+ *   2. the durable tracker marker already naming this cycle (AC 10), which is
+ *      what an ST's own Confirm, or a reconciliation that has already run, leaves
+ *      behind;
+ *
+ * A save IN FLIGHT is deliberately not a lock: the control stays rendered and
+ * goes disabled ("Saving...") the way every other write affordance in this file
+ * does, and `doFeedingDeclaration()`'s own `feedBusy` guard is what actually
+ * stops a second write starting.
+ *
+ * A FAILED tracker read is deliberately NOT treated as "locked": the real state
+ * is unknown, and refusing the control on unknown state would silently strand a
+ * player who has genuinely not fed yet. The write path's own fail-closed
+ * behaviour (AC 12, `maybeReconcileFeed()`) is where an unreadable tracker stops
+ * things, not here.
+ */
+function feedDeclarationLocked() {
+  if (feedDeclCommitted) return true;
+  const ts = trackerFigures();
+  if (ts && activeCycleId && ts.marker === activeCycleId) return true;
+  return false;
 }
 
 function render() {
@@ -2588,6 +2809,18 @@ function wireEvents() {
     // control in that case; this is the second lock on the same door.
     const ts = trackerFigures();
     if (!ts) return;
+    // Story 12.8 (AC 14, Architecture "Round 2 corrections" #3): THE SECOND LOCK
+    // ON THE SAME DOOR. Suppressing the button's render is not sufficient if the
+    // handler itself remains reachable by any other route - the same standard
+    // this handler already applies for `_confirmInFlight` just above. Before
+    // this, a marker match skipped only the Aggravated half of the write (the
+    // `aggHealed > 0 && ts.marker !== cycleSnapshot` branch below) and still
+    // wrote `vitae`/`influence` unconditionally, which is precisely the
+    // double-apply this story exists to close.
+    //
+    // Scoped to the form-sourced state for the same reason the render guard is:
+    // the legacy tm_game-sourced panel is explicitly out of scope for this story.
+    if (feedingState === 'rolled-from-form' && activeCycleId && ts.marker === activeCycleId) return;
     _confirmInFlight = true;
     // Review fix (Codex, external, third round, Medium): everything this write
     // belongs to is SNAPSHOTTED before the await. The ST can switch character,
@@ -2811,9 +3044,26 @@ async function doFeedingRoll() {
  * One write, one sitting — Angelus's own ruling that once the roll exists both
  * open at the same time rather than being gated one at a time across separate
  * visits. Same no-optimism discipline as the roll: re-read afterwards.
+ *
+ * STORY 12.8 made this reachable (AC 9b - it had no button to fire it) and gave
+ * it a second half: the declaration is applied to the character's own
+ * `tracker_state` immediately afterwards, through the same `applyFeedToTracker()`
+ * the load-time reconciliation uses. It is WRITE-ONCE - there is no path back
+ * into this function for a cycle that already has a declaration on file.
  */
 async function doFeedingDeclaration() {
-  if (feedBusy || !currentChar || !activeCycleId || !Array.isArray(feedVesselDraft)) return;
+  if (feedBusy || _feedApplyInFlight || !currentChar || !activeCycleId || !Array.isArray(feedVesselDraft)) return;
+  // AC 12, fail-closed: the tracker application that follows this write needs
+  // the character's real current Vitae and Aggravated. If the live read failed,
+  // those are UNKNOWN, and a declaration saved now would land with no way to
+  // apply it. Refuse the write and say so, rather than record a feed the tracker
+  // will never reflect.
+  const figures = trackerFigures();
+  if (!figures) {
+    feedNotice = { kind: 'error', text: FEED_TRACKER_UNREADABLE };
+    render();
+    return;
+  }
 
   feedBusy = true;
   feedNotice = null;
@@ -2822,21 +3072,251 @@ async function doFeedingDeclaration() {
   const charSnapshot = currentChar;
   const cycleSnapshot = activeCycleId;
   const paneSnapshot = container;
-  const res = await postStoryFeedingDeclaration(String(charSnapshot._id), cycleSnapshot, {
+  // SNAPSHOTTED BEFORE THE AWAIT, with everything else: `feedVesselDraft` and
+  // `feedAggDraft` are view state and are nulled by a character switch, so the
+  // body the tracker application is told about must be the body that was
+  // actually sent, not whatever the module holds when the response lands.
+  const declBody = {
     vesselVitae: feedVesselDraft.map(v => Math.max(0, Math.trunc(Number(v) || 0))),
     aggHealed: Math.max(0, Math.trunc(Number(feedAggDraft) || 0)),
-  });
+  };
+  const res = await postStoryFeedingDeclaration(String(charSnapshot._id), cycleSnapshot, declBody);
 
-  if (currentChar !== charSnapshot || activeCycleId !== cycleSnapshot || container !== paneSnapshot) return;
+  const stillCurrent = () =>
+    currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot;
 
   if (!res.ok) {
+    // A refusal belongs to the view that asked for it; a view that has moved on
+    // has nothing to show it to. The write did not happen either way.
+    if (!stillCurrent()) return;
     feedNotice = { kind: 'error', text: feedWriteFailureText(res, 'feed') };
     feedBusy = false;
     render();
     return;
   }
 
+  // AC 9a: the server's own derived total, never a client re-derivation.
+  const fedTotal = _strictNum(res.data?.fedTotal);
+  if (stillCurrent() && fedTotal !== null) feedServerFedTotal = fedTotal;
+
+  // AC 9 ("apply immediately as an optimisation, using the same underlying
+  // function") and AC 11 (keyed by character id, UNCONDITIONAL on view state):
+  // this runs before the stale-view check below on purpose. The guard that
+  // follows protects the RENDER; it must not be allowed to skip the WORK.
+  await applyFeedToTracker({
+    charSnapshot, cycleSnapshot, paneSnapshot,
+    fedTotal, aggHealed: declBody.aggHealed, figures,
+  });
+
+  if (!stillCurrent()) return;
+
   await reloadStoryFeeding(charSnapshot, cycleSnapshot, paneSnapshot);
+}
+
+/** The one sentence an unreadable tracker gets, wherever it is surfaced. */
+const FEED_TRACKER_UNREADABLE = 'Your tracker could not be read just now, so this feed has not been applied to your '
+  + 'Vitae and Aggravated. Nothing has been guessed at. Reload the page to try again.';
+
+/**
+ * Story 12.8 (AC 9/AC 10/AC 11/AC 13): apply one committed feed to the
+ * character's real tracker_state, once.
+ *
+ * A CLAMPED DELTA-ADD, NOT AN ABSOLUTE SET. This is a deliberate divergence from
+ * the ST-confirm panel's own precedent directly above (`{ vitae: n }`, the
+ * handler's own body at :2628), and the divergence is the whole point. That path
+ * works because a human recomputes `n` on a stepper each time, with the panel's
+ * own copy (:1394) admitting the bonus vitae is not even tallied there and the ST
+ * adds it by hand. Remove the human and an absolute set silently RESTORES any
+ * Vitae the player legitimately spent between recording the declaration and the
+ * tab load that reconciles it. The shape here is `trackerAdj()`'s instead
+ * (`../game/tracker.js:268-298`: `clamp(cs.vitae + delta, 0, calcVitaeMax(c))`),
+ * made safe against repetition by the once-only marker rather than by arithmetic.
+ *
+ * THE DELTA. `fedTotal` is the server's own figure - the vessel draws plus
+ * `vitaeProjection().net`. Healing is paid out of that same total at 4 Vitae per
+ * box ("4 Vitae heals 1 Aggravated damage box, spent from this cycle's own fed
+ * total only", the panel's own copy and TM Story's `sections/feeding.js:892-900`),
+ * so what the character actually walks away with is the panel's own `remaining`
+ * line: `fedTotal - aggHealed * 4`. Aggravated moves by the boxes healed, floored
+ * at 0, exactly as the ST-confirm handler already computes it.
+ *
+ * Clamped on BOTH sides: here against `calcVitaeMax` so the tab never offers the
+ * server an impossible number, and again server-side in
+ * `server/routes/tracker.js` (AC 13) so the clamp is a boundary rather than a
+ * courtesy.
+ *
+ * Everything it needs is passed in, already snapshotted by the caller. It reads
+ * no view state and therefore cannot be invalidated by a character switch, a
+ * cycle change or a re-mount mid-flight (AC 11).
+ */
+async function applyFeedToTracker({ charSnapshot, cycleSnapshot, paneSnapshot, fedTotal, aggHealed, figures }) {
+  const charId = String(charSnapshot._id);
+  if (fedTotal === null || fedTotal === undefined) {
+    // The route answered without its own derived total (AC 9a), so there is no
+    // trustworthy number to apply and this tab will not invent one. The marker
+    // is NOT written, so the next tab load retries (AC 12's own retry model).
+    console.error('[feeding] declaration response carried no fedTotal; tracker not applied');
+    if (currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+      feedNotice = {
+        kind: 'error',
+        text: 'Your feed was recorded, but the downtime service did not say how much Vitae it came to, so your '
+          + 'tracker has not been changed. Reload the page to try again.',
+      };
+      render();
+    }
+    return { ok: false };
+  }
+
+  const spent = Math.max(0, aggHealed) * 4;
+  const gained = Math.max(0, fedTotal - spent);
+  const newVitae = Math.max(0, Math.min(calcVitaeMax(charSnapshot), figures.vitae + gained));
+  const newAgg = Math.max(0, figures.aggravated - Math.max(0, aggHealed));
+
+  // The marker rides the SAME write as the values it describes (AC 10): one
+  // request, so there is no window in which the tracker has moved and nothing
+  // records that it has.
+  const body = { vitae: newVitae, [AGG_HEALED_MARKER]: cycleSnapshot };
+  if (aggHealed > 0) body.aggravated = newAgg;
+
+  // Independent re-verification follow-up (2026-09-11): `_feedingMarkerGuard`
+  // makes this write CONDITIONAL at the database itself, not only on the
+  // in-memory `figures.marker` check above - two near-simultaneous callers for
+  // the same character (two open tabs, a retry racing the original request)
+  // each read "marker absent" before either writes without this; with it, the
+  // server refuses the second one rather than both applying `gained` on top of
+  // each other. See `server/routes/tracker.js`'s own PUT handler for the other
+  // half. Not sent as a real tracker_state field - the route strips it before
+  // storing or whitelisting anything.
+  const guardedBody = { ...body, _feedingMarkerGuard: cycleSnapshot };
+
+  try {
+    await apiPut('/api/tracker_state/' + charId, guardedBody);
+  } catch (err) {
+    // AC 12: never silent. No marker was written, so the next tab load tries
+    // again by itself.
+    console.error('[feeding] tracker apply failed:', err);
+    if (currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+      feedNotice = {
+        kind: 'error',
+        text: 'Your feed was recorded, but your Vitae and Aggravated tracker could not be updated just now. '
+          + 'It will be applied automatically next time this tab loads.',
+      };
+      render();
+    }
+    return { ok: false };
+  }
+
+  // Everything from here is GLOBAL VIEW state - the same discipline the ST
+  // confirm handler already applies (:2646-2651). The write above is keyed by
+  // character id and is correct either way; only what is on screen is not.
+  if (currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+    trackerDoc = { ...(trackerDoc || {}), ...body };
+    trackerLoad = 'ok';
+  }
+  // Keep tracker.js's in-memory cache in step so the live tracker card does not
+  // go on showing the pre-feed numbers (same follow-up the confirm handler does).
+  const raw = trackerReadRaw(charId);
+  if (raw) {
+    raw.vitae = newVitae;
+    if (aggHealed > 0) raw.aggravated = newAgg;
+  }
+  return { ok: true, body };
+}
+
+/**
+ * Story 12.8 (AC 9): the RECONCILIATION, run on every load of this tab.
+ *
+ * The application of a feed to the tracker is not a one-shot tied to a single
+ * button click. A declaration write can succeed with the tab closed, the network
+ * failing, or the character switched before the tracker write fires - and, far
+ * more commonly, a player can record the whole feed in TM Story's own downtime
+ * form (still live, `FORM_RETIRED = false`) and never open this tab to click
+ * anything at all. The durable marker (AC 10) is the source of truth for "has
+ * this cycle's feed been applied yet"; if a committed declaration exists and the
+ * marker is absent or names another cycle, this applies it.
+ *
+ * PRECONDITION (AC 9c, RULED by Angelus 2026-09-11: "seed the marker now"): an
+ * absent marker means "never applied" only because a one-time migration has
+ * already marked every character whose current-cycle declaration an ST had
+ * hand-confirmed before this shipped. Those feeds are correct in tracker_state
+ * and carry no marker of their own, because the ST-confirm handler only ever
+ * attached one inside its `aggHealed > 0` branch (data-lock #9/#11). That
+ * migration is a separate piece of work and is not run from here.
+ *
+ * AC 9a: the total applied is the SERVER'S. Nothing stores `fedTotal` - TM Story
+ * derives it at render time (`sections/feeding.js:892`) and keeps no copy - so
+ * for a declaration this tab did not itself just save, the only way to obtain
+ * the server's own figure is to re-send the stored declaration verbatim. AC 2
+ * makes that route a full-value REPLACE and AC 3 rules that a re-save accepts the
+ * stored array's own length, so re-sending what is already stored is a no-op
+ * write that answers with the derived total. It happens at most once per
+ * character per cycle, because it only runs while the marker is absent.
+ */
+async function maybeReconcileFeed(charSnapshot, cycleSnapshot, paneSnapshot) {
+  if (_feedApplyInFlight || feedBusy) return;
+  if (!charSnapshot || !cycleSnapshot) return;
+
+  const d = normaliseStoryDeclaration(storyFeedRaw);
+  if (!d.vesselsDeclared && d.aggHealed <= 0) return; // nothing committed to apply
+
+  // AC 12: FAIL-CLOSED AND SURFACED. A failed live read means the real Vitae and
+  // Aggravated are unknown; there is no panel to withhold behind on an automatic
+  // path, so the state is said out loud and retried on the next load.
+  const figures = trackerFigures();
+  if (!figures) {
+    console.error('[feeding] tracker_state unreadable; feed not applied for', String(charSnapshot._id));
+    if (currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+      feedNotice = { kind: 'error', text: FEED_TRACKER_UNREADABLE };
+      render();
+    }
+    return;
+  }
+
+  // AC 10: ONE marker for both components. Already applied for this cycle means
+  // applied, Vitae included - not "the Aggravated half is done".
+  if (figures.marker === cycleSnapshot) return;
+
+  // The stored declaration, re-sent verbatim. Coerced through the same boundary
+  // check every other TM Story value on this tab goes through, but WITHOUT
+  // dropping entries: the array's own length is part of what AC 3 validates, so
+  // an unreadable entry becomes 0 rather than shortening the array. Real stored
+  // data cannot contain one - `normaliseVesselVitae` collapses a malformed array
+  // to `[]` on the way in - so this is a boundary guarantee, not a repair.
+  const vesselVitae = (Array.isArray(storyFeedRaw?.vesselVitae) ? storyFeedRaw.vesselVitae : [])
+    .map(v => _vesselVitae(v) ?? 0);
+  const aggHealed = d.aggHealed;
+
+  _feedApplyInFlight = true;
+  try {
+    const res = await postStoryFeedingDeclaration(String(charSnapshot._id), cycleSnapshot, { vesselVitae, aggHealed });
+    if (!res.ok) {
+      console.error('[feeding] could not re-derive fedTotal for reconciliation:', res.reason, res.detail || '');
+      if (currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+        feedNotice = {
+          kind: 'error',
+          text: 'Your recorded feed has not been applied to your Vitae and Aggravated yet, because the downtime '
+            + 'service could not be reached to confirm the total. It will be applied automatically next time this '
+            + 'tab loads.',
+        };
+        render();
+      }
+      return;
+    }
+    const fedTotal = _strictNum(res.data?.fedTotal);
+    if (fedTotal !== null
+      && currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+      feedServerFedTotal = fedTotal;
+    }
+    const applied = await applyFeedToTracker({
+      charSnapshot, cycleSnapshot, paneSnapshot, fedTotal, aggHealed, figures,
+    });
+    if (applied.ok
+      && currentChar === charSnapshot && activeCycleId === cycleSnapshot && container === paneSnapshot) {
+      render();
+    }
+  } finally {
+    _feedApplyInFlight = false;
+  }
 }
 
 /**

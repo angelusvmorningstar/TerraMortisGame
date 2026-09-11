@@ -284,28 +284,31 @@ test.describe('Story 12.7 — frozen declaration (Scenario 1)', () => {
     await expect(sb.locator('[data-feeding-roll]')).toBeVisible();
   });
 
-  test('the vessel feed / vitae heal write-back is gated off until Story 12.8 ships its route', async ({ page }) => {
-    // TM Story serves no `.../feeding/declaration` route today - that write half
-    // was split out to Story 12.8 (depends_on 12.7, not yet built). Until it
-    // ships, an unrecorded vessel/agg feed renders as an explanatory notice, not
-    // an interactive draft with a "Save" button that would 404 on a real player.
-    const calls = await setupRoutes(page, {
+  test('the vessel feed / vitae heal write-back is live, not gated (inverted by Story 12.8)', async ({ page }) => {
+    // INVERTED BY STORY 12.8 (its AC 15 names this test explicitly). Story 12.7
+    // shipped with this write half GATED, because TM Story served no
+    // `.../feeding/declaration` route and rendering a Save button would have been
+    // a guaranteed 404 on a player's own primary action. Story 12.8 built that
+    // route and un-gated the client (its AC 9b), so the placeholder is gone and
+    // the interactive draft plus its Save control are what an unrecorded,
+    // resolved feed renders. The assertions below are the same facts, inverted -
+    // they are not deleted, so a regression that reinstates the gate fails here.
+    await setupRoutes(page, {
       story: feedingDoc({ rollResult: rollResultDoc({ successes: 2 }) }),
       tracker: { willpower: 5, influence: 3, aggravated: 2 },
     });
     const sb = await openFeedingSandbox(page, buildChar());
 
-    await expect(sb.locator('.feeding-story-flow')).toContainText('arriving in a follow-up story');
-    await expect(sb.locator('.feeding-story-flow .vd-card')).toHaveCount(0);
-    await expect(sb.locator('.feeding-story-flow button.vd-box')).toHaveCount(0);
-    await expect(sb.locator('[data-feeding-declare]')).toHaveCount(0);
-    expect(calls.declarationPosts).toHaveLength(0);
+    await expect(sb.locator('.feeding-story-flow')).not.toContainText('arriving in a follow-up story');
+    await expect(sb.locator('.feeding-story-flow .vd-card')).toHaveCount(2);
+    await expect(sb.locator('.feeding-story-flow button.vd-box')).toHaveCount(14);
+    await expect(sb.locator('[data-feeding-declare]')).toHaveCount(1);
   });
 
   test('a vessel feed already recorded through the downtime form still renders read-only', async ({ page }) => {
-    // The gate above only withholds the WRITE affordance. Data the player already
-    // committed through TM Story's own downtime form is a read, not a write, and
-    // stays live exactly as Story 12.2 shipped it.
+    // Write-ONCE (Story 12.8 AC 9b, Angelus's own ruling): data the player already
+    // committed - here through TM Story's own downtime form - renders as a read,
+    // exactly as Story 12.2 shipped it, and the Save control does not come back.
     await setupRoutes(page, {
       story: feedingDoc({
         rollResult: rollResultDoc({ successes: 2 }),
@@ -428,10 +431,12 @@ test.describe('Story 12.7 — AC 13: measured, in both themes', () => {
   // legacy rules for the same class names - and that both themes resolve.
   for (const theme of ['light', 'dark']) {
     test(`the ported surface computes TM Story's own treatment (${theme})`, async ({ page }) => {
-      // Vessel/agg boxes are seeded as ALREADY RECORDED: the write path that
-      // would render them editable is gated off pending Story 12.8 (see
-      // renderStoryFeedFlow's own comment), so the only live rendering of
-      // .vd-card/.vd-box/.dt-agg-box today is the read-only one - measure that.
+      // Vessel/agg boxes are seeded as ALREADY RECORDED, so this measures the
+      // READ-ONLY rendering specifically. Story 12.8 made the editable rendering
+      // real as well (its AC 9b un-gated the write path), and that half is
+      // measured by `story-12-8-feeding-vessel-heal-writeback.spec.js`; keeping
+      // this fixture committed is what makes the `.vd-box:not(button)` half of
+      // the CSS split measurable at all.
       await setupRoutes(page, {
         story: feedingDoc({
           rollResult: rollResultDoc({ successes: 1 }),
@@ -498,9 +503,11 @@ test.describe('Story 12.7 — AC 13: measured, in both themes', () => {
       expect(m.die.height).toBe('22px');
       expect(m.vdCard['padding-top']).toBe('10px');
       expect(m.vdBox.width).toBe('20px');
-      // Read-only rendering (the only live path pending Story 12.8): a <span>,
-      // not a <button>, so `.vd-box:not(button)` wins - cursor: default, not
-      // pointer. Confirms the CSS split itself resolves, not just the sizing.
+      // Read-only rendering of an already-committed feed: a <span>, not a
+      // <button>, so `.vd-box:not(button)` wins - cursor: default, not pointer.
+      // Confirms the CSS split itself resolves, not just the sizing. (Story 12.8
+      // measures the editable side of the same split, where the rule that gives
+      // `button.vd-box` back its pointer must win instead.)
       expect(m.vdBox.cursor).toBe('default');
       expect(m.aggBox.width).toBe('20px');
       expect(m.lockTag['text-transform']).toBe('uppercase');

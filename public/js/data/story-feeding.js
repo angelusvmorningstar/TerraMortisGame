@@ -105,20 +105,21 @@ export function storyFeedingRollPath(characterId, cycleId) {
   return `${storyFeedingPath(characterId, cycleId)}/roll`;
 }
 
-// THE DECLARATION PATH IS AN ASSUMPTION, AND IS FLAGGED AS ONE.
+// THE DECLARATION PATH WAS AN ASSUMPTION. IT IS NOT ONE ANY MORE.
 //
-// Story 12.7 documents an endpoint for the ROLL only, but Angelus's own workflow
-// ruling for this story is that once the roll exists, the vessel feed and the
-// vitae heal both open together, "completable now, not gated one at a time across
-// separate visits" - which means TM Game must be able to write
-// `content.feeding.vesselVitae` and `content.feeding.aggHealed` as well, or the
-// panels would be a second silent-drop of exactly the kind this story exists to
-// remove. No path for that is named anywhere in the story, so this one is
-// inferred from the roll route's own shape rather than guessed at random.
+// Written for Story 12.7 by inference from the roll route's own shape, because
+// Angelus's workflow ruling (once the roll exists, the vessel feed and the vitae
+// heal both open together, "completable now, not gated one at a time across
+// separate visits") required a write path for
+// `content.feeding.vesselVitae`/`aggHealed` that 12.7's own story never named.
+// It carried an explicit "must be confirmed against the server half before this
+// ships" flag, and 12.7 shipped with the client gated off rather than pointed at
+// a route that did not exist.
 //
-// It must be confirmed against the server half before this ships. A 404 here is
-// surfaced to the player as a plain "could not save" (never a silent success), so
-// a wrong guess degrades honestly rather than losing a declaration.
+// Story 12.8 DECIDED it (its AC 1): TM Story now serves exactly this path and
+// method, with its own request schema, and the gate is gone. A 404 is still
+// surfaced to the player as a plain "could not save" rather than a silent
+// success, as it always was.
 export function storyFeedingDeclarationPath(characterId, cycleId) {
   return `${storyFeedingPath(characterId, cycleId)}/declaration`;
 }
@@ -347,10 +348,17 @@ export async function postStoryFeedingRoll(characterId, cycleId, pick) {
 /**
  * Commit the vessel feed and the vitae heal together (one write, one sitting).
  *
- * `declaration` carries `{ vesselVitae: [n, ...], aggHealed: n }`. See
- * `storyFeedingDeclarationPath` above: THIS PATH IS AN ASSUMPTION pending the
- * server half of Story 12.7, and a 404 from it is surfaced to the player rather
- * than swallowed.
+ * `declaration` carries `{ vesselVitae: [n, ...], aggHealed: n }` and nothing
+ * else - the route's own schema is `additionalProperties: false` (Story 12.8
+ * AC 1), so a stray field is a 400 rather than a silent drop.
+ *
+ * THE RESPONSE CARRIES `fedTotal` (Story 12.8 AC 9a): the server's own derived
+ * healing budget, the vessel draws plus `vitaeProjection().net`. TM Game renders
+ * and applies from THAT number and never re-derives it - a second implementation
+ * of a derived rule in a second app is the exact failure class Story 12.7's AC 2
+ * doctrine exists to prevent, and the client's own vessel-only sum is only ever
+ * a floor while the projection net is non-negative (the Barrens carries a real
+ * ambienceMod of -4, so it is not always).
  */
 export async function postStoryFeedingDeclaration(characterId, cycleId, declaration) {
   if (!characterId || !cycleId) return unavailable('bad-args');
