@@ -381,7 +381,7 @@ export async function renderFeedingTab(el, char) {
   if (!activeCycle) {
     // No game phase and no eligible submission — feeding is not yet available
     el.innerHTML = `<div class="tab-split">
-      <div class="tab-split-left" id="feeding-left-pane"><p class="placeholder-msg">Feeding rolls open when the Storyteller opens the game phase.</p></div>
+      <div class="tab-split-left" id="feeding-left-pane"><p class="placeholder-msg">Feeding rolls open once the Storyteller moves the cycle to Prep or Game.</p></div>
       <div class="tab-split-right" id="feeding-right-pane"></div>
     </div>`;
     container = document.getElementById('feeding-left-pane');
