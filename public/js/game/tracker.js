@@ -265,6 +265,36 @@ export async function trackerReset() {
   renderAll();
 }
 
+// Player self-service spend — Vitae/Willpower only, decrease-only. A separate action from
+// trackerAdj/saveToApi deliberately: saveToApi always resends the WHOLE persisted-fields bundle
+// (health boxes, influence, conditions included), which the server's own player-facing write
+// path can't safely widen to (Health needs ST tracking in combat, Influence has its own declared-
+// spend flow) - so this calls the narrower POST .../spend route instead, sending only the one
+// field that changed. Mirrors trackerAdj's own synchronous-cache-then-fire-and-forget shape so
+// the click handler's immediate repaint sees the new value without awaiting the network round trip.
+export async function trackerSpend(charId, field, amount) {
+  const c = (suiteState.chars || []).find(x => String(x._id) === charId);
+  if (!c) return;
+  if (!_confirmed.has(charId)) await ensureLoaded(c);
+  const cs = _cache[charId];
+  if (!cs) return;
+  if (field !== 'vitae' && field !== 'willpower') return;
+  if (!(amount > 0)) return;
+
+  const current = field === 'vitae' ? (cs.vitae ?? 0) : (cs.willpower ?? 0);
+  const newVal = Math.max(0, current - amount);
+  if (field === 'vitae') cs.vitae = newVal; else cs.willpower = newVal;
+
+  markLocalWrite(charId, { [field]: newVal });
+  fetch(`${apiBase()}/api/tracker_state/${charId}/spend`, {
+    method: 'POST',
+    headers: authHeaders(),
+    body: JSON.stringify({ field, amount }),
+  }).catch(() => { /* silent fail — cache remains valid, matches saveToApi's own convention */ });
+
+  patchCard(charId, c, cs);
+}
+
 export async function trackerAdj(charId, field, delta) {
   const c = (suiteState.chars || []).find(x => String(x._id) === charId);
   if (!c) return;

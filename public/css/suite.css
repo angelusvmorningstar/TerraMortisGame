@@ -269,6 +269,14 @@ select.sh-char-sel{width:100%;height:48px;background:var(--surf2);border:1px sol
 .sh-tracker-boxes{display:flex;gap:5px;flex-wrap:wrap;width:100%;order:1;margin-top:4px;}
 .tbox{width:34px;height:30px;border-radius: var(--radius-sm);border:1px solid var(--gold-a30);background:transparent;cursor:pointer;-webkit-tap-highlight-color:transparent;display:flex;align-items:center;justify-content:center;}
 body.tracker-readonly .tbox{cursor:default;pointer-events:none;}
+/* Game 9 prep (2026-09-12): a player may now spend their own Vitae/Willpower (never Health/
+   Influence) from this same tap-box tracker - suite/sheet.js's click handler already carries the
+   real per-type, spend-only-direction enforcement, but this coarser `body.tracker-readonly` rule
+   above blocks the pointer event before it ever reaches that handler. Re-enable pointer-events on
+   just these two box types rather than removing the broader toggle - Health/Influence stay fully
+   inert for a player, both visually and functionally, exactly as before. */
+body.tracker-readonly .tbox[data-tracker="vitae"],
+body.tracker-readonly .tbox[data-tracker="wp"]{cursor:pointer;pointer-events:auto;}
 .tbox.health-filled{background:var(--green);border-color:var(--green2);}
 .tbox.vitae-filled{background:var(--crim-a85);border-color:var(--err5);}
 .tbox.wp-filled{background:var(--gold);border-color:var(--gold);}

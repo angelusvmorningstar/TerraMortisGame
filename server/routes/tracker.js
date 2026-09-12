@@ -222,6 +222,50 @@ router.put('/:character_id', async (req, res) => {
   res.json(result);
 });
 
+// POST /api/tracker_state/:character_id/spend — player self-service Vitae/Willpower spend.
+//
+// Deliberately a SEPARATE, narrower route from the general PUT above, not an extra branch on
+// it. PUT already carries a legitimate, validated player-writable INCREASE path — Story 12.8's
+// automatic feeding reconciliation writes `vitae` UP from the player's own session when they
+// load the Feeding tab — so a blanket "a non-ST caller may only decrease" rule on PUT would
+// break that already-shipped feature. This route can never increase anything: it only ever
+// subtracts a caller-declared amount, floored at 0, computed via a Mongo aggregation-pipeline
+// update (not read-then-write) so two near-simultaneous spends — a double-click, two open tabs —
+// can't race past each other and each apply their own subtraction against a stale read.
+router.post('/:character_id/spend', async (req, res) => {
+  const raw = req.params.character_id;
+  if (!canAccess(req, raw)) return res.status(403).json({ error: 'FORBIDDEN' });
+
+  const { field } = req.body || {};
+  if (field !== 'vitae' && field !== 'willpower') {
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'field must be "vitae" or "willpower"' });
+  }
+  const amt = numOrNull(req.body?.amount);
+  if (amt === null || amt <= 0) {
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'amount must be a positive number' });
+  }
+  const spend = Math.trunc(amt);
+
+  let filter;
+  try { filter = { character_id: { $in: [new ObjectId(raw), raw] } }; }
+  catch { filter = { character_id: raw }; }
+
+  // No upsert: a spend against a character with no tracker_state row yet has no real current
+  // value to subtract from (the row is normally created by the sheet's own initial load, before
+  // a player could ever reach a spend control) — fail closed rather than guess a starting value.
+  const result = await col().findOneAndUpdate(
+    filter,
+    [{ $set: { [field]: { $max: [0, { $subtract: [{ $ifNull: [`$${field}`, 0] }, spend] }] } } }],
+    { returnDocument: 'after' },
+  );
+  if (!result) {
+    return res.status(404).json({ error: 'NOT_FOUND', message: 'No tracker state on file yet for this character - load the sheet first.' });
+  }
+
+  broadcastTrackerUpdate(raw, { [field]: result[field] });
+  res.json(result);
+});
+
 // DELETE /api/tracker_state — ST/dev only, bulk wipe for game-start reset
 router.delete('/', async (req, res) => {
   const role = req.user?.role;

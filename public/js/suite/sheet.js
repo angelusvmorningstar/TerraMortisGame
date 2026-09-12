@@ -32,7 +32,7 @@ import {
 // computation when unmaterialised).
 import { defenceForDisplay } from '../data/equipment-derivation.js';
 import { xpEarned, xpSpent, xpLeft } from '../editor/xp.js';
-import { trackerRead, trackerReadRaw, trackerAdj, trackerWriteField } from '../game/tracker.js';
+import { trackerRead, trackerReadRaw, trackerAdj, trackerSpend, trackerWriteField } from '../game/tracker.js';
 import { calcTotalInfluence, influenceBreakdown } from '../editor/domain.js';
 import { shRenderInfluenceMerits, shRenderDomainMerits, shRenderGeneralMerits, shRenderManoeuvres, shRenderEquipment, shRenderOfficeMerits, patchOfficeMerits } from '../editor/sheet.js';
 import { renderRulesExpander } from '../shared/rules-text.js';
@@ -999,12 +999,15 @@ document.addEventListener('click', function(e) {
 
 // ── TRACKER TOGGLE ──
 // Event delegation on tracker-block — writes through to the canonical tracker store.
-// ST/dev only — players view tracker state but cannot adjust it.
+// ST/dev can adjust any tracker in either direction. A player may adjust their OWN Vitae/
+// Willpower only, and only downward (spend) — Health stays ST-tracked (combat needs ST
+// oversight) and Influence keeps its own declared-spend flow through the downtime form/Feeding
+// tab tally, so neither opens up here just because Vitae/Willpower now do.
 document.addEventListener('click', function(e) {
   const box = e.target.closest('[data-tracker]');
   if (!box) return;
   const role = (window._getRole || (() => 'player'))();
-  if (role !== 'st' && role !== 'dev') return;
+  const isPrivileged = role === 'st' || role === 'dev';
   const block = box.closest('#tracker-block');
   if (!block) return;
   if (!state.sheetChar) return;
@@ -1018,6 +1021,8 @@ document.addEventListener('click', function(e) {
   const cs        = trackerRead(charId);
   if (!cs) return;
 
+  if (!isPrivileged && type !== 'vitae' && type !== 'wp') return;
+
   // Compute current value in sheet terms
   const maxH = calcHealth(c);
   let currentSheet;
@@ -1027,12 +1032,20 @@ document.addEventListener('click', function(e) {
   else if (type === 'inf')    currentSheet = cs.inf        ?? 0;
   else return;
 
-  // Tap filled → spend down to idx; tap empty → recover up to idx+1
+  // Tap filled → spend down to idx; tap empty → recover up to idx+1. A non-privileged caller
+  // (a player, on vitae/wp only, per the gate above) may only ever spend — tapping an empty box
+  // to self-restore is a silent no-op, not an error.
   const newVal = idx < currentSheet ? idx : idx + 1;
   const delta  = newVal - currentSheet;
   if (delta === 0) return;
+  if (!isPrivileged && delta > 0) return;
 
-  if (type === 'health') {
+  if (!isPrivileged) {
+    // Player self-spend — routes through trackerSpend (a narrower, decrease-only write), never
+    // trackerAdj, which resends the whole persisted-fields bundle including fields a player must
+    // not be able to touch.
+    trackerSpend(charId, type === 'vitae' ? 'vitae' : 'willpower', -delta);
+  } else if (type === 'health') {
     if (delta < 0) {
       // Taking damage — add lethal (ST reclassifies in Tracker if needed)
       trackerAdj(charId, 'lethal', -delta);

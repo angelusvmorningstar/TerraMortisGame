@@ -106,7 +106,13 @@ export function createTestApp() {
   app.use('/api/territories', mockAuth, CACHE_5MIN, territoriesRouter);
   // ST-only routes
   app.use('/api/game_sessions', mockAuth, requireRole('coordinator'), noCache(), gameSessionsRouter);
-  app.use('/api/tracker_state', mockAuth, requireRole('st'), noCache(), trackerRouter);
+  // NOT requireRole('st') - production (server/index.js) mounts this behind `requireAuth` only,
+  // relying on the router's OWN canAccess() (an ST/dev role OR the requesting player owning the
+  // character) for its finer-grained check. A requireRole('st') gate here would 403 an owning
+  // player before the router's own ownership branch ever runs - the opposite of what's live -
+  // and would make it impossible to test the player-writable paths (Story 12.8's feeding
+  // reconciliation, the Vitae/Willpower self-spend route) against a real player identity.
+  app.use('/api/tracker_state', mockAuth, noCache(), trackerRouter);
   app.use('/api/ordeal_submissions', mockAuth, noCache(), ordealSubmissionsRouter);
   app.use('/api/ordeal-responses', mockAuth, noCache(), ordealResponsesRouter);
   // 2026-08-29: mounted for the first time — these two had never been wired into
