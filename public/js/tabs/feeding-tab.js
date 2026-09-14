@@ -1707,7 +1707,22 @@ function currentRollGate() {
   });
 }
 
-/** Trait picks only - never a total, never dice (AC 2). */
+/**
+ * Trait picks only - never a total, never dice (AC 2).
+ *
+ * LIVE BUG FIX, 2026-09-14 (reported by a real player, Edgar Black, via Discord DM: "Unknown
+ * field not permitted on this endpoint: bloodType" on every attempt to roll). `bloodType` and
+ * `poolLocked` were being sent here but TM Story's own
+ * `downtimeSubmissionFeedingRollRequestSchema` (`additionalProperties: false`) never allowed
+ * either, and the route handler never reads `body.bloodType`/`body.poolLocked` at all -- its own
+ * comment at the atomic-write guard states outright that "description, bloodType, vesselVitae,
+ * aggHealed and poolLocked are the player's and are not this route's to rewrite". `poolLocked` is
+ * independently re-derived server-side from the STORED submission (`storedFeeding?.poolLocked`),
+ * never from the request body, so sending it here was always redundant. Neither field was being
+ * persisted anywhere else in this click-to-roll flow either (the Blood Type/`data-feed-bt`
+ * handler only updates local state, no separate save call) -- removing them here loses no working
+ * behaviour, it only stops every roll attempt 400ing.
+ */
 function rollRequestBody() {
   return {
     method: feedSel.method,
@@ -1715,9 +1730,7 @@ function rollRequestBody() {
     poolSkill: feedSel.poolSkill,
     poolDisc: feedSel.poolDisc,
     poolSpecChip: feedSel.poolSpecChip,
-    bloodType: feedSel.bloodType,
     violence: feedSel.violence,
-    poolLocked: !!feedSel.poolLocked,
     ...(feedSel.territory ? { territory: feedSel.territory } : {}),
   };
 }
