@@ -2047,6 +2047,15 @@ function renderFeedVesselDrain() {
 
   // Animal blood: ONE shared pool of 3 Vitae per success, not one vessel per
   // success, and no Breaking Point risk at any amount (Angelus, 2026-09-01).
+  //
+  // LIVE BUG FIX, 2026-09-14 (reported by Angelus after watching Etsy's real feed): every box
+  // here was coloured via `storyVitaeColourClass(b)` — the SAME green/amber/red scale the human
+  // vessel track below uses to signal rising Breaking-Point/harm risk as ONE vessel is drained
+  // past 2, then 4, Vitae. That scale has no meaning here: `b` is a position in a flat, risk-free
+  // shared pool, not a single vessel's harm level, so a 9-Vitae animal draw painted its last three
+  // boxes red — visually claiming an escalating danger the very sentence above it (and the real
+  // mechanic) says does not exist. Every filled box is now uniformly `vd-c-green` ("safe"),
+  // matching the copy: there is no risk tier to signal, at any pool size.
   if (animal) {
     const poolMax = rr.successes * 3;
     const v = Math.min(drawn[0] || 0, poolMax);
@@ -2056,7 +2065,7 @@ function renderFeedVesselDrain() {
     h += '<div class="vd-card-head"><span>Animal Blood Pool</span></div>';
     h += '<div class="vd-boxes" data-vessel-idx="0">';
     for (let b = 1; b <= poolMax; b++) {
-      const filled = b <= v ? ` vd-box-filled ${storyVitaeColourClass(b)}` : '';
+      const filled = b <= v ? ' vd-box-filled vd-c-green' : '';
       h += editable
         ? `<button type="button" class="vd-box${filled}" data-box="${b}" aria-label="${b} vitae"></button>`
         : `<span class="vd-box${filled}"></span>`;
