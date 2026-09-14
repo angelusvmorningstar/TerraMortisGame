@@ -3143,24 +3143,30 @@ const FEED_TRACKER_UNREADABLE = 'Your tracker could not be read just now, so thi
  * Story 12.8 (AC 9/AC 10/AC 11/AC 13): apply one committed feed to the
  * character's real tracker_state, once.
  *
- * A CLAMPED DELTA-ADD, NOT AN ABSOLUTE SET. This is a deliberate divergence from
- * the ST-confirm panel's own precedent directly above (`{ vitae: n }`, the
- * handler's own body at :2628), and the divergence is the whole point. That path
- * works because a human recomputes `n` on a stepper each time, with the panel's
- * own copy (:1394) admitting the bonus vitae is not even tallied there and the ST
- * adds it by hand. Remove the human and an absolute set silently RESTORES any
- * Vitae the player legitimately spent between recording the declaration and the
- * tab load that reconciles it. The shape here is `trackerAdj()`'s instead
- * (`../game/tracker.js:268-298`: `clamp(cs.vitae + delta, 0, calcVitaeMax(c))`),
- * made safe against repetition by the once-only marker rather than by arithmetic.
+ * LIVE BUG FIX, 2026-09-14 (Angelus, after a real player's -- Etsy/Edgar Black's --
+ * first feed under today's prep-phase gate fix landed on Vitae 10/10 instead of the
+ * correct 9, re-derived exactly from the real fedTotal formula). THIS WAS A CLAMPED
+ * DELTA-ADD; IT IS NOW A CLAMPED ABSOLUTE SET, on Angelus's own explicit, repeated
+ * ruling: "Vitae does not carry over from game to game... it is always 0 before
+ * feeding (or should be)... when a player confirms their feeding... this overwrites
+ * the CURRENT vitae amount." The delta-add's own original reasoning (protecting
+ * Vitae "legitimately" present before this write) rests on a premise this rule
+ * rules out outright -- there is no legitimate prior Vitae to protect, because
+ * Vitae is never supposed to be nonzero before a feed is confirmed. In practice the
+ * delta-add let a stray prior write (the OLD ST-confirm panel below, or a stale
+ * pre-Story-12.8 value never reset) get ADDED to rather than overwritten by this
+ * one, compounding instead of correcting. `figures.vitae` (the pre-write read) is
+ * no longer part of the Vitae formula at all -- see the calculation below.
  *
- * THE DELTA. `fedTotal` is the server's own figure - the vessel draws plus
+ * THE FIGURE. `fedTotal` is the server's own figure - the vessel draws plus
  * `vitaeProjection().net`. Healing is paid out of that same total at 4 Vitae per
  * box ("4 Vitae heals 1 Aggravated damage box, spent from this cycle's own fed
  * total only", the panel's own copy and TM Story's `sections/feeding.js:892-900`),
  * so what the character actually walks away with is the panel's own `remaining`
- * line: `fedTotal - aggHealed * 4`. Aggravated moves by the boxes healed, floored
- * at 0, exactly as the ST-confirm handler already computes it.
+ * line: `fedTotal - aggHealed * 4`, SET as the character's new Vitae outright, not
+ * added to whatever was there. Aggravated is unaffected by this rule (it genuinely
+ * persists and accumulates within a cycle) and stays relative: it moves by the
+ * boxes healed, floored at 0, exactly as the ST-confirm handler already computes it.
  *
  * Clamped on BOTH sides: here against `calcVitaeMax` so the tab never offers the
  * server an impossible number, and again server-side in
@@ -3190,8 +3196,11 @@ async function applyFeedToTracker({ charSnapshot, cycleSnapshot, paneSnapshot, f
   }
 
   const spent = Math.max(0, aggHealed) * 4;
-  const gained = Math.max(0, fedTotal - spent);
-  const newVitae = Math.max(0, Math.min(calcVitaeMax(charSnapshot), figures.vitae + gained));
+  // OVERWRITE, not add (see this function's own comment above): Vitae is always 0
+  // before a feed, so the character's new Vitae IS this feed's net total, full
+  // stop -- `figures.vitae` (whatever the tracker read before this write) never
+  // enters this calculation.
+  const newVitae = Math.max(0, Math.min(calcVitaeMax(charSnapshot), fedTotal - spent));
   const newAgg = Math.max(0, figures.aggravated - Math.max(0, aggHealed));
 
   // The marker rides the SAME write as the values it describes (AC 10): one

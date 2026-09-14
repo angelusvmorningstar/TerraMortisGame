@@ -6,9 +6,11 @@
  * "Observable" line it is written against:
  *
  *   AC 9    the tracker application is a RECONCILIATION (fires from a bare tab
- *           load, no click), it is a CLAMPED DELTA-ADD and not an absolute set,
- *           it does not fire twice, and Vitae spent between the declaration and
- *           the reconciliation survives it
+ *           load, no click), it does not fire twice, and — CHANGED 2026-09-14,
+ *           Angelus's own standing rule ("Vitae does not carry over from game to
+ *           game... always 0 before feeding... this overwrites the CURRENT vitae
+ *           amount") — it is a CLAMPED ABSOLUTE SET, not a delta-add: whatever
+ *           Vitae is already on the tracker plays no part in the write at all
  *   AC 9a   the healing budget rendered is the SERVER'S derived `fedTotal`, not
  *           the client's vessel-only sum (a Barrens feed is the discriminator)
  *   AC 9b   the un-gate: a real, reachable Save control that POSTs for real;
@@ -293,7 +295,7 @@ test.describe('Story 12.8 - AC 9b: the un-gate, and write-once', () => {
   });
 });
 
-test.describe('Story 12.8 - AC 9/AC 10: reconciliation, delta-add, idempotency', () => {
+test.describe('Story 12.8 - AC 9/AC 10: reconciliation, absolute set, idempotency', () => {
 
   test('AC 9: a declaration with no marker applies from a BARE TAB LOAD, no click involved', async ({ page }) => {
     const calls = await setupRoutes(page, {
@@ -310,16 +312,22 @@ test.describe('Story 12.8 - AC 9/AC 10: reconciliation, delta-add, idempotency',
     expect(calls.declarationPosts[0]).toEqual({ vesselVitae: [4, 2], aggHealed: 1 });
     expect(calls.trackerPuts).toHaveLength(1);
     const body = calls.trackerPuts[0].body;
-    // fedTotal 6, one box healed at 4 Vitae => 2 gained, ADDED to the live 1.
-    // An absolute set would have written 6 or 2; a delta-add writes 3.
-    expect(body.vitae).toBe(3);
+    // LIVE BUG FIX, 2026-09-14 (Angelus: "Vitae does not carry over from game to
+    // game... it is always 0 before feeding... this overwrites the CURRENT vitae
+    // amount"): fedTotal 6, one box healed at 4 Vitae => 2 remaining, SET outright.
+    // The tracker's own pre-existing 1 is irrelevant and must not survive into the
+    // write — a delta-add would have written 3 (1 + 2), which is exactly the bug.
+    expect(body.vitae).toBe(2);
     expect(body.aggravated).toBe(1);
     expect(body[MARKER]).toBe('cycle-128');
   });
 
-  test('AC 9: Vitae spent between the declaration and the reconciliation SURVIVES the write', async ({ page }) => {
-    // The whole reason the write is a delta-add and not the ST panel's absolute
-    // set: the player legitimately spent down to 2 after recording the feed.
+  test('AC 9 [FIXED 2026-09-14]: Vitae already on the tracker does NOT survive the write — it is overwritten', async ({ page }) => {
+    // Angelus's own standing rule, repeated at least 5 times: Vitae never carries
+    // over between games and is always 0 before feeding. A nonzero prior value
+    // here represents exactly the failure this fix closes — a stray earlier write
+    // (the OLD ST-confirm panel, or a stale pre-Story-12.8 value) — and the
+    // reconciliation must OVERWRITE it with fedTotal, never add to it.
     const calls = await setupRoutes(page, {
       story: feedingDoc({ rollResult: rollResultDoc({ successes: 2 }), vesselVitae: [3, 1], aggHealed: 0 }),
       tracker: { vitae: 2, willpower: 5, influence: 3, aggravated: 0 },
@@ -329,15 +337,18 @@ test.describe('Story 12.8 - AC 9/AC 10: reconciliation, delta-add, idempotency',
     await page.waitForTimeout(900);
 
     expect(calls.trackerPuts).toHaveLength(1);
-    expect(calls.trackerPuts[0].body.vitae).toBe(6); // 2 spent-down + 4 fed, not 4
+    expect(calls.trackerPuts[0].body.vitae).toBe(4); // fedTotal alone, NOT 2 (stray prior) + 4
   });
 
-  test('AC 9: the delta is clamped against the real Vitae maximum', async ({ page }) => {
-    // Blood Potency 2 => calcVitaeMax 11. 9 live + 6 fed must land on 11, not 15.
+  test('AC 9: the SET is clamped against the real Vitae maximum', async ({ page }) => {
+    // Blood Potency 2 => calcVitaeMax 11. A fedTotal of 15 (e.g. a strong ambience/
+    // Oath-of-Fealty bonus on top of a big draw) must land on 11, not 15 — and the
+    // tracker's own pre-existing 9 must play NO part in that (an old delta-add
+    // would have summed to 24 before clamping; this must clamp fedTotal alone).
     const calls = await setupRoutes(page, {
       story: feedingDoc({ rollResult: rollResultDoc({ successes: 2 }), vesselVitae: [4, 2], aggHealed: 0 }),
       tracker: { vitae: 9, willpower: 5, influence: 3, aggravated: 0 },
-      fedTotal: 6,
+      fedTotal: 15,
     });
     await openFeedingSandbox(page, buildChar());
     await page.waitForTimeout(900);
