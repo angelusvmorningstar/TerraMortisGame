@@ -2017,7 +2017,16 @@ function feedResolvedRoll() {
 function feedVesselView() {
   const rr = feedResolvedRoll();
   if (!rr) return null;
-  const animal = (storyFeeding?.bloodType || feedSel?.bloodType) === 'Animal';
+  // The live in-session choice (feedSel, set by clicking Animal/Human/Kindred
+  // above) must win over the original declared value (storyFeeding, from the
+  // downtime form) once the player/ST has touched it here - the buttons render
+  // as live and clickable specifically because blood type stays editable at
+  // roll time (TM Story's own feedingRollSignature() deliberately excludes it).
+  // The `||` order used to put storyFeeding first, so a character who had
+  // declared ANY blood type always rendered that value regardless of what was
+  // clicked here - the click updated feedSel and the button's own highlight,
+  // but never the vessel-drain panel actually shown below it.
+  const animal = (feedSel?.bloodType || storyFeeding?.bloodType) === 'Animal';
   const committed = feedVesselsCommitted;
   if (!committed && !Array.isArray(feedVesselDraft)) {
     // One 7-box track per success, or a single shared pool for an animal feed.
