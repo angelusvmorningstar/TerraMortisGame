@@ -96,11 +96,19 @@ time you buy this Merit. Your character can speak, read, and write in that langu
 
 ## Library (● to ●●●)
 
-**Effect:** Your character's meditation is far more fulfilling than for other characters. With the one-dot version of this
+**Effect:** Your character has access to a plethora of information about a given topic. When purchasing this Merit,
 
-choose a Mental Skill. The Library covers that purview. On any extended roll involving the Skill in question, add the dots in this Merit. This Merit can be purchased multiple times, to reflect different Skills. Additionally, its benefits can be shared by various characters, with permission. Meditative Mind (●, ●●, or ●●●●) Merit, the character does not suffer environmental penalties to meditation (see p. 75), even from wound penalties. With the two-dot version, when the character has successfully meditated, she gains a +3 bonus on any Resolve + Composure rolls during the same day, as she's steeled herself against the things in the world that would shake her foundation. At the four-dot level, she only needs a single success to gain the benefits of meditation for the day, instead of the normal four.
+choose a Mental Skill. The Library covers that purview. On any extended roll involving the Skill in question, add the dots in this Merit. This Merit can be purchased multiple times, to reflect different Skills. Additionally, its benefits can be shared by various characters, with permission.
 
 > *Errata: Use of Merit can be loaned for mundane extended actions*
+
+---
+
+## Meditative Mind (● to ●●●●)
+
+**Effect:** Your character's meditation is far more fulfilling than for other characters. With the one-dot version of this
+
+Merit, the character does not suffer environmental penalties to meditation (see p. 75), even from wound penalties. With the two-dot version, when the character has successfully meditated, she gains a +3 bonus on any Resolve + Composure rolls during the same day, as she's steeled herself against the things in the world that would shake her foundation. At the four-dot level, she only needs a single success to gain the benefits of meditation for the day, instead of the normal four.
 
 ---
 
@@ -1265,6 +1273,8 @@ This Oath binds two Kindred together in a powerful union, where their collective
 **Effect:** The character swears the Oath upon taking a position, be it an Invictus position, or a neutral domain
 
 position. From that point forward, her position becomes an additional Mask for her. Determine exactly what this means, depending on the specific role she's sworn to. Additionally, when she spends Willpower in pursuit of her duties, she may substitute her Invictus or City Status (whichever is relevant) instead of the normal +3 or -2 afforded by Willpower. Invictus take their positions very seriously; violating her Oath of Office is considered Detachment at Humanity 1. In this Oath, the highest-ranking city official presiding over her position acts as the liege. As vassal, she must purchase the Merit.
+
+> *Errata: Cost reduced from 3 dots to 1 dot. Ending this Oath can only be done by losing this position or release by Liege or Notary.*
 
 ---
 

@@ -838,30 +838,35 @@ async function renderFeedingHistoryPane(el, char) {
   let h = '<div class="dt-hist-panel">';
   h += '<div class="dt-hist-title">Feeding Results</div>';
 
-  if (!charSubs.length) {
+  // Cull cards with no real content (Angelus, 2026-09-18 live review): a
+  // published outcome with no "## Feeding" section at all - Game 6/Game 7
+  // both did this for at least one character - used to render an empty
+  // "No feeding section recorded." card, cluttering the panel with entries
+  // that carry no information. Skipped entirely now rather than shown as a
+  // placeholder; if that empties the whole list, fall back to the same
+  // "nothing published yet" message the zero-submissions case already uses.
+  let shown = 0;
+  for (const sub of charSubs) {
+    const cycle = cycleMap[String(sub.chapter_id)];
+    const label = cycle?.label || `Cycle ${String(sub.chapter_id).slice(-4)}`;
+
+    // Extract just the Feeding section from the published outcome
+    const feedMatch = sub.published_outcome.match(/##\s*Feeding\s*\n([\s\S]*?)(?=\n##\s|$)/);
+    const feedingText = feedMatch ? feedMatch[1].trim() : null;
+    if (!feedingText) continue;
+
+    shown++;
+    h += `<div class="dt-hist-entry">`;
+    h += `<div class="dt-hist-entry-head"><span class="dt-hist-cycle">${esc(label)}</span></div>`;
+    h += `<div class="dt-hist-outcome">`;
+    feedingText.split('\n').filter(Boolean).forEach(line => {
+      h += `<p>${esc(line)}</p>`;
+    });
+    h += `</div>`;
+    h += `</div>`;
+  }
+  if (!shown) {
     h += '<p class="placeholder-msg dt-hist-empty">No published feeding results yet.</p>';
-  } else {
-    for (const sub of charSubs) {
-      const cycle = cycleMap[String(sub.chapter_id)];
-      const label = cycle?.label || `Cycle ${String(sub.chapter_id).slice(-4)}`;
-
-      // Extract just the Feeding section from the published outcome
-      const feedMatch = sub.published_outcome.match(/##\s*Feeding\s*\n([\s\S]*?)(?=\n##\s|$)/);
-      const feedingText = feedMatch ? feedMatch[1].trim() : null;
-
-      h += `<div class="dt-hist-entry">`;
-      h += `<div class="dt-hist-entry-head"><span class="dt-hist-cycle">${esc(label)}</span></div>`;
-      if (feedingText) {
-        h += `<div class="dt-hist-outcome">`;
-        feedingText.split('\n').filter(Boolean).forEach(line => {
-          h += `<p>${esc(line)}</p>`;
-        });
-        h += `</div>`;
-      } else {
-        h += `<div class="dt-hist-outcome"><p class="placeholder-msg">No feeding section recorded.</p></div>`;
-      }
-      h += `</div>`;
-    }
   }
 
   h += '</div>';

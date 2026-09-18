@@ -192,15 +192,18 @@ migration was written: there was nothing to move.
 
 ## Reference / Rules Data
 
+**Corrected 2026-09-17 (Reeve's rules-doc reconciliation pass) — the table below previously described
+a "baked into JS" model that no longer exists.** `public/js/data/merits-db.js`, `devotions-db.js` and
+`man-db.js` are gone (confirmed absent on disk); attributes, skills, disciplines, merits, devotions,
+rites and manoeuvres now all live in one Mongo-backed collection, the same migration pattern as
+`office_content` (see the Office section above).
+
 | Domain | Source | Notes |
 |--------|--------|-------|
-| Merits database (203+ entries) | `public/js/data/merits-db.js` | Baked into JS — not in MongoDB |
-| Devotions database (42 entries) | `public/js/data/devotions-db.js` | Baked into JS |
-| Clan/covenant/mask/dirge constants | `public/js/data/constants.js` | Baked into JS |
-| Manoeuvre definitions | `public/js/data/man-db.js` | Baked into JS |
-| Rules content (powers, errata) | `rules` collection | `GET /api/rules` |
+| Rules/powers database — attributes, skills, disciplines, merits, devotions, rites, manoeuvres | `purchasable_powers` collection | `GET /api/rules` (public read, `?category=`/`?q=`/pagination filters), `POST`/`PUT /api/rules/:key` (ST only). Schema: `server/schemas/purchasable_power.schema.js` (`category` enum: `attribute`, `skill`, `discipline`, `merit`, `devotion`, `rite`, `manoeuvre`). Managed in TM Game's admin.html → Rules tab (`public/js/admin/rules-view.js`); TM Admin has its own parallel authoring surface against the same collection (see TM Admin's own specs). |
+| Clan/covenant/mask/dirge constants | `public/js/data/constants.js` | Still genuinely baked into JS — not migrated, unlike the rules/powers data above |
 | NPCs | `npcs` | `GET /api/npcs` (ST only) / `GET /api/npcs/for-character/:id` (player-readable for linked NPCs; ST always). Schema adds `is_correspondent` (DTOSL.1), `st_suggested_for` (DTOSL.3 pending), `created_by` (DTOSL.5 pending). Status enum includes `pending` and `archived`. |
-| Feed methods + territory data | `public/js/player/downtime-data.js` | Shared constants — import from here, do not duplicate |
+| Feed methods + territory data | `public/js/player/downtime-data.js` | Shared constants — import from here, do not duplicate. **Note (see TM Story's own docs): TM Story's live form offers 8 feed methods via a DB-backed `tm_story.feeding_templates` collection (Story 11.9); this file/the tool's own `feed-methods.mjs` still only know the original 5 — a live drift, not addressed by this correction.** |
 
 ---
 

@@ -121,3 +121,43 @@ Standalone features and fixes that don't fit an existing epic. Includes quick wi
 - Options: (a) email+password as alternative to Discord, (b) email-based magic link, (c) email purely for identity verification alongside Discord
 - Scope decision needed before story can be written
 - Status: **backlog — not ready for dev**
+
+---
+
+## Story FEAT-6: Combat module health-check + roller auto-spend of Vitae/Willpower
+
+**Backlog item:** 24
+
+**Logged 2026-09-18, Angelus's own instruction: log as a task, do not start.** Potential scope for a
+future build session, not scoped yet. Two related asks, likely two stories once scoped:
+
+**(a) Ensure the combat module is working properly.** No specific defect named — a general
+verification/health-check ask. `epic-cmb-combat-panel.md` (combat panel rebuild, ALL stories still
+`backlog`, unstarted) already covers the card-based rebuild; this note may be about that epic
+specifically, or about the CURRENT `combat-tab.js` still working correctly in the meantime — needs
+clarifying with Angelus before scoping which one.
+
+**(b) The dice roller should be able to spend Vitae/Willpower, reducing the player's pool in the
+app** — and should automatically recognise when a player activates/rolls a power that costs Vitae or
+Willpower (or spends WP to add dice) and apply the corresponding pool reduction itself, rather than
+requiring a separate manual tracker edit.
+
+**Hard constraint, stated explicitly: players must NEVER be able to ADD Vitae or Willpower through
+this mechanism — reduction only.** Angelus named that there will be exceptions eventually, but ruled
+them explicitly out of scope for now — any future scoping of (b) must preserve reduction-only as the
+default and treat any add-path as a separate, later, explicitly-scoped exception, not a general
+capability.
+
+### Dev Notes
+
+- Related existing epics to check before scoping: `epic-cmb-combat-panel.md` (backlog, combat
+  panel's own manual Vitae/Willpower +/- already exists there per cmb.1's own notes), `epic-rlv-
+  roller-harmonisation.md` (done, consolidated the roller engine this would build on), `epic-rcv-
+  roller-convergence.md` (done, ported the special-mechanics UI layer — Willpower-adds-dice etc.
+  already has some UI presence per that epic's own notes, worth checking exactly what it did and
+  didn't wire to a tracker write).
+- Not yet verified against live code whether any power activation today already writes to
+  `tracker_state` automatically, or whether every Vitae/Willpower pool change is currently manual
+  (Tracker tab, Combat tab's own +/-, ST confirm). That's the first thing a scoping pass should
+  establish.
+- Status: **backlog — not ready for dev, do not start until scoped**

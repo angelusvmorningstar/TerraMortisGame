@@ -1988,3 +1988,188 @@ route exists), not fixed as part of this story since the button's own gating log
 third condition (a positive server-estimated total) that this tab cannot compute pre-save without
 either a dedicated probe endpoint or the same pre-save-`fedTotal` gap already named in the "known
 narrowing" comment. Revisit alongside that gap if it's ever closed.
+
+## Deferred from: live incident (Aleksei Romanov blood-type toggle hotfix), 2026-09-18
+
+**Angelus's own future-scope flag, not yet built**: when a player (or the ST, acting on a player's
+behalf) clicks Roll Feeding — an irreversible action — the character's current Vitae pool should be
+explicitly cleared to 0 at that moment, so that whatever amount is later confirmed from vessel draws
+is guaranteed to be added to a genuinely empty pool, not whatever the tracker happened to hold going
+in.
+
+**Where this sits today, verified against live code**: `doFeedingRoll()`
+(`public/js/tabs/feeding-tab.js:3041-3070`) — the irreversible roll click handler — does not touch
+`tracker_state`/Vitae at all; it only posts the roll result to the submission and re-reads it.
+The only Vitae write happens later, at confirm/declare time, in `applyFeedToTracker()`
+(`:3189` onward), which per [[feedback_vitae-never-carries-over-write-is-absolute-set]] already does
+an absolute set (`clamp(fedTotal - spent, 0, max)`) rather than a delta-add — the 2026-09-14 Etsy
+incident that rule documents is fixed at THIS point.
+
+**Why this is still worth building, not just theoretical**: the current correctness depends entirely
+on `applyFeedToTracker()`'s math staying right forever, with no earlier invariant enforced. Angelus's
+ask adds a second, independent guarantee at the earliest possible moment (the irreversible roll
+itself) rather than trusting the later confirm-step write alone — the same "second lock on the same
+door" discipline already applied to the marker-guard fix noted in the tm-admin.12.8 entry above, just
+one step earlier in this flow. Would also close any hypothetical window between roll and confirm
+where a manual tracker edit or an unrelated write could leave stale Vitae the confirm step's own
+absolute-set math never gets a chance to correct, since it only runs once, at declare time.
+
+**Not scoped or built.** Whoever picks this up should re-verify `doFeedingRoll()`'s current behaviour
+against live code first (this entry is dated 2026-09-18; the function may have changed), then decide
+where the zero-write belongs — inside `doFeedingRoll()` itself, or in the server route
+`postStoryFeedingRoll()` calls into, so it can't be bypassed by any other roll entry point.
+
+## Deferred from: live Breaking Point/bane rulings (Yusuf Kalusicj, Orenthal Lamar McGillicuddy), 2026-09-18
+
+**Angelus's own tech-debt flag**: the Humanity/Detachment check roll in the dice roller doesn't
+apply a dice penalty for a held detachment bane. Every bane carries a standing "−1 die to all future
+Detachment rolls" cost (`st-rulings-log.md`, the Charlie Ballsack precedent and this session's own
+Yusuf/Orenthal entries) — nothing enforces it mechanically today.
+
+**Verified, not just assumed**: `detachmentDicePool({ humanity, level, touchstoneMod, meditativeMindBonus })`
+(`TM Story/public/js/downtime-form/feeding-reference.js:423`) is the only Detachment-pool-sizing
+function in either repo — it takes a touchstone modifier and a Meditative Mind bonus, but no
+bane-count/bane-penalty parameter at all. Grepped both repos for `detachmentDicePool` and for
+`Detachment` generally: TM Game's actual dice roller (`public/js/suite/roll-v2.js`) has **no
+Detachment-specific roll path whatsoever** — no hit for either term. A Humanity check today is very
+likely run as a manual/custom pool the ST sizes by hand, which means a bane's −1 is only ever applied
+if a human remembers to subtract it every time, for every bane a character holds simultaneously (no
+cap enforcement observed either — see the Mekhet "Additional Bane does not count towards Bane cap"
+errata note, implying a cap exists and multiple banes can genuinely stack).
+
+**Not scoped or built.** Two real gaps, either could be its own story: (1) `detachmentDicePool()`
+needs a bane-count parameter, mirroring how it already takes `touchstoneMod`; (2) there may be no
+dedicated Detachment roll path in TM Game's live roller at all, which is a bigger question — worth
+checking against Epic RCV/RLV's own scope (both closed/done) before assuming this needs new roller
+surface versus just a formula fix to an existing manual-pool flow.
+
+## Deferred from: Game 8 equipment audit, 2026-09-18 — combat module is equipment-aware for weapons, NOT for armour
+
+**Angelus's own flag, verified against live code.** `public/js/game/combat-tab.js` genuinely IS
+equipment-aware for weapons — it reads a character's `equipment[]`, resolves each entry via
+`getCatalogueEntry(item.catalogue_id)`, and pulls real `damage_mod`/`damage_type` for attack
+resolution (confirmed live: `isEquipmentOnMe()` filters to carried/worn states, `damage_mod` read
+at line ~865-871). **Armour is a different story**: `calcDefence`/`calcHealth`
+(`public/js/data/accessors.js`, imported by `combat-tab.js`) have **zero reference to
+`armour_value` or `equipment` anywhere in that file** — grepped directly, no hits. So a character's
+equipped armour (`armour_value`/`defence_penalty` on a catalogue item) currently has **no
+mechanical effect on combat at all** — tracked on the sheet, never read for defense.
+
+**Why this is live-relevant today, not theoretical**: this session applied real armour items to
+several characters' sheets (Yusuf's 10 Ballistic Vests, Eve's custom armoured undershirt, Charlie's
+tailored sports gear, Wan/Clarence/Ryan's vests) as part of the Game 8 equipment pass. None of that
+armour currently does anything in a Combat-tab fight — only their weapons would show any real
+mechanical effect.
+
+**Not scoped or built.** Real candidate story, likely folding into Epic CMB (the combat-panel
+rebuild, currently all-backlog): `calcDefence`/`calcHealth` (or their CMB-rebuilt equivalents) need
+to read equipped armour's `armour_value`/`defence_penalty` the same way weapon resolution already
+reads `damage_mod`. Whoever picks this up should re-verify this entry's own claims against live
+code first (dated 2026-09-18) and check whether the CMB epic's own scoping already accounts for
+this before treating it as a fresh gap.
+
+## Deferred from: combat-readiness review + live staking scenario, 2026-09-18 — armour gap is worse than "no effect," and staking specifically is unprotected
+
+**PARKED — pick back up after Game 8 downtime is fully closed out, per Angelus's explicit instruction 2026-09-18. Do not start on this mid-downtime.**
+
+Supersedes/corrects the entry above (same date, same audit day) in two ways, both verified against
+live code by three independent reviewers (Reeve, Winston, Dana, Sally — a `tm-combat-readiness-review`
+workflow) plus a follow-up direct check this session:
+
+1. **Armour is not "zero effect" — it's net-negative.** `combat-tab.js` doesn't call `calcDefence`
+   directly; it calls `defenceForDisplay(c)` from `public/js/data/equipment-derivation.js`, which
+   **does** read `c.equipment[]` and subtracts a worn item's `defence_penalty` from the wearer's
+   Defence (`armourDefencePenalty()`, `equipment-derivation.js:192-204`). So worn armour is live and
+   working for its *encumbrance* half — it makes the wearer easier to hit — while `armour_value` (the
+   *protection* half) is confirmed still never read anywhere in `public/js` for damage reduction. Net
+   effect for every character wearing armour right now: strictly worse off than wearing nothing.
+   Armour is also not displayed anywhere in the Combat tab UI (not on the card, not the Attack
+   modal) — an ST has no in-tool cue to remember a target is armoured at all.
+
+2. **Staking specifically has its own, separate gap, independent of the general armour issue —
+   and it's the one with live consequences tomorrow (2026-09-19).** The real rule (Errata Master
+   §"A Stake to the Heart", matches Rulebook:8409-8417): a stake attack takes a -3 die penalty to
+   target the heart; it only causes Torpor at **5+ successes AND 5+ net damage**. Core text
+   (Rulebook:15343) states damage-reduction stats specifically make staking harder — soak is meant
+   to be the defence against it.
+   - `combat-tab.js` (the live Combat tab) has **zero staking logic at all** — no heart-targeting
+     penalty, no 5-success/5-damage gate, no Torpor trigger, doesn't import `isStakeWeapon`.
+   - Staking logic exists only in a different tool, `public/js/suite/roll-v2.js` (`_stakeNote()`,
+     ~line 864-914): flags "5+ successes with a stake — confirm 5+ net damage," lets the ST apply
+     Torpor to a picked target. **Its own code comment states outright that armour/soak reduction is
+     not computed at this layer** — the ST has to hand-calculate net damage against armour every
+     time, in neither tool automatically.
+   - **Live scenario, confirmed direct from Mongo this session**: the actual plan for tomorrow's
+     session is to stake Eve Lockridge. She has three `equipment[]` entries flagged `state: "worn"`
+     simultaneously (Reinforced Clothing AV1/DP0, Armoured Vest AV3/DP1, Custom Armoured Undershirt
+     AV3/DP0) plus a stashed Ballistic Vest. **Angelus ruled live, 2026-09-18: worn armour does not
+     stack** — only one applies. Which specific item is the open, unresolved question (Custom
+     Armoured Undershirt is strictly better than Armoured Vest for her — same AV3, no DP1 penalty —
+     so there's no reason the Vest would be the one in effect unless deliberately chosen). She has no
+     Resilience merit, so armour is her only mechanical defence against being staked. **If the stake
+     attempt resolves through either live tool as-is, she is staked exactly as easily as if she wore
+     nothing** — defeating the entire point of the equipment purchased for her this cycle.
+   - **This compounds**: Yusuf's armour (Full Tactical AV4/DP2, 10 Ballistic Vests) is expected to be
+     distributed to the rest of the Carthians before tomorrow, so the same silent gap will apply to
+     everyone who receives a share.
+   - **Workaround used for tomorrow specifically (manual, not code)**: when a stake roll lands 5+
+     successes, the ST subtracts the defender's applicable `armour_value` from the raw damage before
+     checking the 5-net-damage threshold, by hand, in both tools. Not automated anywhere.
+
+**Also found, same review, not staking-specific:**
+- **Dana**: `trackerAdj()` (`tracker.js:298-332`) silently no-ops on further damage once a health
+  track is full — no Bashing→Lethal→Aggravated wrap-around/upgrade, no error, the button just does
+  nothing. Real risk in a large scene: someone should be dropped or upgraded to Aggravated and
+  isn't, with no UI signal it happened.
+- **Sally**: the Kindred bashing/lethal split calculator renders identically on every card
+  regardless of species (no `isNpc` gate) — nothing stops an ST clicking Apply on a mortal, who
+  shouldn't get Bashing-by-default.
+- **Sally**: the Attack modal's weapon-rating reference chip isn't passed to the split calculator —
+  the ST has to remember and retype it, and two live characters' notes (Brandy's, Samuel's) already
+  disagree with the catalogue number for that exact stat.
+- **Winston**: Epic CMB (the combat-panel rebuild the earlier entry assumed was "all-backlog") is
+  actually done — code-complete, reviewed, closed 2026-09-01, merged and pushed to `origin/main`
+  (`de3fd643`, 2026-09-18). The armour/staking/wrap-around gaps above are gaps in the *shipped*
+  module, not a not-yet-built one. Unverified from this review alone: whether the live Render/Netlify
+  deploy is actually serving that commit — worth a direct dashboard check before relying on it.
+
+**All three reviewers' explicit recommendation, independently converged on**: don't patch combat
+math same-day before a live session. Brief the ST running the scene on the manual workarounds
+instead. Consistent with parking this until after downtime closes.
+
+**Not scoped or built.** Real candidate story/stories, likely folding into a future combat-epic pass
+once picked back up: (1) wire `armour_value` into damage resolution generally: (2) give staking its
+own first-class resolution path (heart-targeting penalty, 5-success/5-damage gate, armour-aware net
+damage, Torpor application) in the tool actually used live (`combat-tab.js`), not just the
+side-roller; (3) health-track wrap-around/upgrade on a full track; (4) species-gate the Kindred split
+calculator; (5) surface armour on the combat card itself so an ST has an in-tool cue.
+
+## Deferred from: Game 8 XP/Sway audit, 2026-09-18 — MCI merit instances never renamed to Organisation
+
+**Angelus's own flag, mid-audit**: the assistant used "MCI" in its own prose when the term was
+renamed to **Organisation** across all three repos on 2026-08-26 (see TM Admin memory
+`project_sway-merge-completed`). Investigating why the stale term was so easy to reach for surfaced
+a real, previously-undiscovered gap in that migration, not just a wording slip.
+
+**Verified against live data**: the 2026-08-26 Sway merge explicitly renamed all 62 Allies/Status
+merit instances to `"Sway"` on the actual character documents (`characters.merits[].name`). **No
+equivalent rename ever happened for MCI.** Confirmed live today: **18 characters still carry a
+merit literally named `"Mystery Cult Initiation"`** (Yusuf Kalusicj, Alice Vunder, Brandy LaRoux,
+Charles Mercer-Willows, Charlie Ballsack, Eve Lockridge, Ivana Horvat, Jack Fallow, Livia, Ludica
+Lachramore, Ryan Ambrose, Xavier Boussade, Etsy, Keeper, Aleksei Romanov, Màibh Urquhart, Samuel
+Pike, Orenthal Lamar McGillicuddy), **zero characters carry a merit named `"Organisation"`.** The
+2026-08-26 migration's own code changes (MERIT_MATRIX sway/organisation entries, the
+`merit_actions.organisation` lane key, etc.) only renamed the CATEGORY/lane the merit sorts into —
+the merit instance's own `name` field on every character sheet was never touched.
+
+**Consequence**: `merit_actions.organisation[].merit.label` (the native downtime-form's own grow/
+action rows) reads directly off this stale `name` field, so every Organisation-lane action this
+cycle (e.g. Ryan Ambrose's Dockyard Dogs grow) displays as "Mystery Cult Initiation (...)" to the ST
+today, not "Organisation (...)" — cosmetic only, no mechanical effect (rule_key stays stable
+regardless, same pattern as the Sway rename), but real player/ST-facing terminology drift.
+
+**Not scoped or built.** Whoever picks this up should treat it as the same class of fix as the
+original Allies→Sway character-data rename (a `$set` on `merits.$.name` for all 18 affected
+characters, matched by array-filter on `name: "Mystery Cult Initiation"`), re-verify the count
+against live data first (this entry is dated 2026-09-18), and check whether `rule_key`/`cult_name`
+or anything else needs to move alongside it before running it.
