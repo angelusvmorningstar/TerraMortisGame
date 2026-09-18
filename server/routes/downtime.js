@@ -321,7 +321,7 @@ submissionsRouter.get('/story-tab', async (req, res) => {
   downtimes.forEach((report, rankFromNewest) => {
     if (existingChapterIdStrs.has(String(report.cycle_id))) return;
     subs.push(adaptStoryReport(report, characterId, rankFromNewest));
-    chapters.push(syntheticChapterFor(characterId, rankFromNewest));
+    chapters.push(syntheticChapterFor(characterId, rankFromNewest, report.published_at));
   });
   res.json({ downtimes: subs, chapters });
 });
