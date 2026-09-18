@@ -3,19 +3,30 @@
  *
  * A dedicated, read-only endpoint: fetches a character's TM Story-sourced downtimes
  * server-to-server, forwarding the caller's own bearer token, and adapts them into
- * this repo's own tm_game-shaped pseudo-submissions. Touches no Mongo collection at
- * all, so no db-setup fixtures are needed here, only auth/ownership and the mocked
- * outbound TM Story call.
+ * this repo's own tm_game-shaped pseudo-submissions.
+ *
+ * Hotfix (2026-09-18, found during storytab.2 grounding): also queries this repo's own
+ * `downtime_submissions` for the requested character, to drop any TM-Story-sourced
+ * report whose `cycle_id` names a chapter this character already has a real tm_game
+ * submission for (TM Story's Story 8.5 migration copied every pre-Game-8 downtime into
+ * its own DB, and its own `/characters/:id/downtimes` returns those alongside native
+ * Game 8+ cycles with no filter — confirmed live, 15/15 sampled characters showed real
+ * chapter-id overlap). Most tests below still touch no Mongo document (an empty query
+ * result behaves the same as "no dedup needed"); the dedup-specific tests seed and clean
+ * up their own fixture rows.
  */
 
 import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import request from 'supertest';
 import 'dotenv/config';
+import { ObjectId } from 'mongodb';
 import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
 import { setupDb, teardownDb } from './helpers/db-setup.js';
+import { getCollection } from '../db.js';
 
 let app;
 const realFetch = globalThis.fetch;
+const FIXTURE_SUB_IDS = [];
 
 beforeAll(async () => {
   await setupDb();
@@ -25,6 +36,9 @@ beforeAll(async () => {
 afterEach(() => { globalThis.fetch = realFetch; });
 
 afterAll(async () => {
+  if (FIXTURE_SUB_IDS.length) {
+    await getCollection('downtime_submissions').deleteMany({ _id: { $in: FIXTURE_SUB_IDS } });
+  }
   await teardownDb();
 });
 
@@ -125,5 +139,50 @@ describe('GET /api/downtime_submissions/story-tab', () => {
       .set('Authorization', 'Bearer tok');
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ downtimes: [], chapters: [] });
+  });
+
+  describe('dedup against a real tm_game submission (2026-09-18 hotfix)', () => {
+    it('drops a TM-Story-sourced report whose cycle_id names a chapter this character already has a real tm_game submission for', async () => {
+      const existingChapterId = new ObjectId();
+      const inserted = await getCollection('downtime_submissions').insertOne({
+        character_id: 'charA',
+        chapter_id: existingChapterId,
+        published_outcome: 'The original tm_game copy.',
+      });
+      FIXTURE_SUB_IDS.push(inserted.insertedId);
+
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          downtimes: [
+            { cycle_id: existingChapterId.toHexString(), narrative: 'Migrated duplicate of the same game.' },
+            { cycle_id: 'cyc-genuinely-new', narrative: 'A genuinely new TM Story-native cycle.' },
+          ],
+        }),
+      });
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA')
+        .set('X-Test-User', playerUser(['charA']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(res.body.downtimes).toHaveLength(1);
+      expect(res.body.downtimes[0].published_outcome).toBe('A genuinely new TM Story-native cycle.');
+    });
+
+    it('keeps a TM-Story-sourced report for a different character sharing no chapter overlap with charA\'s fixture', async () => {
+      const otherChapterId = new ObjectId();
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          downtimes: [{ cycle_id: otherChapterId.toHexString(), narrative: 'Not overlapping.' }],
+        }),
+      });
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charB')
+        .set('X-Test-User', playerUser(['charB']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(res.body.downtimes).toHaveLength(1);
+    });
   });
 });

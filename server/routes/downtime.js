@@ -44,6 +44,7 @@ import {
   CHAPTER_FK,
   CHAPTER_FK_PROJECTION,
   chapterFkQueryParam,
+  chapterFkValues,
   readChapterFk,
   readChapterFkOid,
   normaliseChapterFkForResponse,
@@ -263,9 +264,41 @@ submissionsRouter.get('/story-tab', async (req, res) => {
     }
   }
   const { downtimes } = await fetchStoryDowntimes({ authorization: req.headers.authorization, characterId });
+
+  // Hotfix, found during storytab.2 grounding (2026-09-18): TM Story's Story 8.5 migration
+  // copied every pre-Game-8 downtime into its own tm_wiki collections (`_migratedFrom.sourceId`
+  // markers), and `GET /characters/:id/downtimes` returns those alongside genuinely native
+  // Game 8+ cycles with no filter on migration status. This repo's own `tm_game.downtime_
+  // submissions` still holds the ORIGINAL document for every one of those migrated cycles
+  // (confirmed live, 2026-09-18: 15/15 sampled characters show real chapter-id overlap). Left
+  // unfiltered, this route would hand the client a second, TM-Story-shaped copy of every
+  // historical game the client already has natively, and story-tab.js's merge (no dedup) would
+  // render both as separate Chronicle entries.
+  //
+  // The fix: skip any TM Story report whose `cycle_id` names a chapter this character already
+  // has a real tm_game submission for. The crosswalk is not a separate lookup table — TM
+  // Story's own `cycle_id` field IS the canon `chapters._id` hex string (documented in TM
+  // Story's `wiki-schemas/downtime-cycles.schema.js` header, confirmed live). `tm_game`'s own
+  // copy is preferred because it is the original, richer-shaped document (structured
+  // `st_narrative.story_moment`/`home_report`, not TM Story's flattened reconstruction).
+  const charOid = parseId(characterId);
+  const existingSubs = await submissions()
+    .find(
+      { character_id: charOid ? { $in: [charOid, characterId] } : characterId },
+      { projection: CHAPTER_FK_PROJECTION },
+    )
+    .toArray();
+  const existingChapterIdStrs = new Set();
+  for (const doc of existingSubs) {
+    for (const v of chapterFkValues(readChapterFk(doc))) {
+      existingChapterIdStrs.add(v instanceof ObjectId ? v.toHexString() : String(v));
+    }
+  }
+  const newDowntimes = downtimes.filter((report) => !existingChapterIdStrs.has(String(report.cycle_id)));
+
   const subs = [];
   const chapters = [];
-  downtimes.forEach((report, rankFromNewest) => {
+  newDowntimes.forEach((report, rankFromNewest) => {
     subs.push(adaptStoryReport(report, characterId, rankFromNewest));
     chapters.push(syntheticChapterFor(characterId, rankFromNewest));
   });
