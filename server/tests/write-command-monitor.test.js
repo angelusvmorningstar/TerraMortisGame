@@ -90,7 +90,10 @@ describe('assertNoWriteCommands', () => {
 describe('WRITE_COMMANDS', () => {
   it('covers the mutating wire commands and is frozen', () => {
     for (const cmd of ['insert', 'update', 'delete', 'findAndModify', 'bulkWrite',
-      'collMod', 'mapReduce', 'drop', 'createIndexes', 'renameCollection']) {
+      'collMod', 'mapReduce', 'drop', 'createIndexes', 'renameCollection',
+      // Codex external review (2026-09-19), Medium: verified against the installed
+      // driver's own operation source (mongodb 7.1.1) — previously missing.
+      'createSearchIndexes', 'updateSearchIndex', 'dropSearchIndex', 'dropUser', 'profile']) {
       expect(WRITE_COMMANDS.has(cmd), `${cmd} must be treated as a write`).toBe(true);
     }
     // Reads are not writes. `aggregate` (the bare read name) is NOT a write — an
@@ -100,5 +103,22 @@ describe('WRITE_COMMANDS', () => {
       expect(WRITE_COMMANDS.has(cmd), `${cmd} must NOT be treated as a write`).toBe(false);
     }
     expect(Object.isFrozen(WRITE_COMMANDS)).toBe(true);
+  });
+
+  // Codex external review (2026-09-19), Low: Object.freeze on a Set instance does not
+  // prevent `.delete()`/`.clear()` — it only protects the exported BINDING. Documents the
+  // real, verified JS semantics so nothing here silently relies on a stronger guarantee
+  // than actually exists.
+  it('(discrimination) Object.freeze does NOT prevent Set-internal mutation, despite the binding being frozen', () => {
+    const probe = Object.freeze(new Set(['insert']));
+    expect(Object.isFrozen(probe)).toBe(true);
+    probe.delete('insert');
+    expect(probe.has('insert')).toBe(false);
+  });
+
+  it('assertNoWriteCommands catches each of the driver-verified command names individually', () => {
+    for (const cmd of ['createSearchIndexes', 'updateSearchIndex', 'dropSearchIndex', 'dropUser', 'profile']) {
+      expect(() => assertNoWriteCommands([cmd]), `${cmd} must be caught`).toThrow(new RegExp(cmd));
+    }
   });
 });

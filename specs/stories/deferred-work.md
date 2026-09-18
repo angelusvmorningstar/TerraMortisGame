@@ -811,6 +811,18 @@ real page, or direct source read) before deferral, not taken on a reviewer's wor
   addition, `oxp-1-office-seats.test.js`'s concurrent-apply race test — confirmed a full-suite
   contention flake, not a regression, by re-running it alone (50/50 clean). Zero failures traced to
   anything this branch touches.
+
+  **ADDENDUM, 2026-09-19 (storytab.4 code review, unrelated branch, same test)**: seen again, and
+  worse — three full-suite runs on that session's own machine, made to settle an external reviewer's
+  attribution question about this same test, all HUNG (worker process alive, near-zero CPU, zero log
+  progress for 8+ minutes) at the exact point this test begins, rather than merely failing one
+  assertion. Atlas itself was confirmed healthy throughout (targeted Mongo-backed runs completed in
+  under 6s each). Not investigated further there either (well outside that story's own scope, and this
+  entry's own conclusion — full-suite contention flake, not a regression — already answered the actual
+  question needed), but recorded here since a hang is a more severe symptom than an assertion failure
+  and this entry is the natural place a future investigation would look first. If this recurs a third
+  time across unrelated branches, it may be worth a dedicated investigation rather than continuing to
+  treat each occurrence as isolated noise.
 - **(RESOLVED 2026-09-02, branch `ms/haven-collective-sharing`, commit `e22e31ea`, PR #1243)** Live
   follow-up from Kurtis W after the fixes above went out: Haven read "capped at 1" regardless of the
   coterie's real shared Safe Place total. Root cause: `meritEffectiveRating`'s `CAP_DOMAIN` branch

@@ -456,19 +456,22 @@ describe('GET /api/downtime_submissions/story-tab', () => {
     // story wires monitorCommands:true onto (server/db.js).
     it('(discrimination) the live monitor DOES catch a real write on the same client, proving the guard above is not vacuous', async () => {
       const { commands, detach } = attachCommandMonitor(getClient());
-      let insertedId;
+      // Codex external review (2026-09-19), Low: cleanup keyed SOLELY on the driver's
+      // returned insertedId misses an indeterminate-write outcome (the server executes the
+      // insert but the driver never gets/returns the acknowledgement, e.g. a connection
+      // drop after execution) — insertedId would stay unset while the document is real.
+      // A stable, self-identifying filter finds and removes it regardless.
+      const CLEANUP_FILTER = { character_id: 'charGuardDiscrimination', _test_seeded: true };
       try {
-        const result = await getCollection('downtime_submissions').insertOne({
-          character_id: 'charGuardDiscrimination',
-          _test_seeded: true,
+        await getCollection('downtime_submissions').insertOne({
+          ...CLEANUP_FILTER,
           _purpose: 'storytab.4 AC2 discrimination proof — deleted immediately below',
         });
-        insertedId = result.insertedId;
         expect(commands).toContain('insert');
         expect(() => assertNoWriteCommands(commands)).toThrow(/insert/);
       } finally {
         detach();
-        if (insertedId) await getCollection('downtime_submissions').deleteOne({ _id: insertedId });
+        await getCollection('downtime_submissions').deleteMany(CLEANUP_FILTER);
       }
     });
   });

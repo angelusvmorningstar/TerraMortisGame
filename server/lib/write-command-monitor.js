@@ -24,6 +24,13 @@
 // aggregate write vector ($out / $merge) surfaces on the wire as `aggregate` (a read
 // name), so it is caught by pipeline inspection in classifyCommand below and recorded as
 // the synthetic name `aggregateWrite`, a member of this set.
+// `Object.freeze` below protects the exported BINDING (no consumer can reassign
+// `WRITE_COMMANDS` to a different Set), not the Set's own internal mutability —
+// `.delete()`/`.clear()`/`.add()` on a frozen Set instance still work (verified: this is
+// JS semantics, freeze only restricts an object's own property descriptors, not a Set's
+// internal slots). Accepted rather than wrapped in a truly-immutable structure: nothing in
+// this repo calls a mutating Set method on it, and the only consumer is this module's own
+// `assertNoWriteCommands` below.
 export const WRITE_COMMANDS = Object.freeze(new Set([
   'insert',
   'update',
@@ -38,6 +45,14 @@ export const WRITE_COMMANDS = Object.freeze(new Set([
   'dropDatabase',
   'dropIndexes',
   'renameCollection',
+  // Codex external review (2026-09-19), Medium: verified against the installed driver's
+  // own operation source (mongodb 7.1.1, server/node_modules/mongodb/src/operations/) —
+  // these wire commands are real mutations this set previously missed.
+  'createSearchIndexes',
+  'updateSearchIndex',
+  'dropSearchIndex',
+  'dropUser', // db.removeUser()'s actual wire command name
+  'profile', // db.setProfilingLevel()'s actual wire command name
   'aggregateWrite', // synthetic: an aggregate carrying an $out / $merge stage
 ]));
 

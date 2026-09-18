@@ -1,0 +1,486 @@
+diff --git a/server/db.js b/server/db.js
+index b8dfa082..cdace534 100644
+--- a/server/db.js
++++ b/server/db.js
+@@ -29,6 +29,11 @@ export async function connectDb() {
+   client = new MongoClient(uri, {
+     serverSelectionTimeoutMS: 5000,
+     tls: true,
++    // Story storytab.4, AC 2: lets a test attach server/lib/write-command-monitor.js's
++    // commandStarted listener to prove a code path (the storytab.1 TM-Story fetch-and-
++    // render path) issues zero write commands. No functional effect with no listener
++    // attached — negligible driver overhead, not a behaviour change.
++    monitorCommands: true,
+   });
+   await client.connect();
+   db = client.db(dbName);
+diff --git a/server/lib/write-command-monitor.js b/server/lib/write-command-monitor.js
+new file mode 100644
+index 00000000..7aeff7c1
+--- /dev/null
++++ b/server/lib/write-command-monitor.js
+@@ -0,0 +1,100 @@
++/**
++ * server/lib/write-command-monitor.js — Story storytab.4, AC 2.
++ *
++ * A runtime "zero write commands" assertion, mirroring TM Story's own
++ * `server/canon-write-monitor.js` (Story 4-1, AC #7) — same shape, generalised: this repo
++ * has no prior "read-only connection" precedent of its own, so this is TM Game's first
++ * instance of the pattern, scoped to the ONE code path storytab.4 guards (the storytab.1
++ * TM-Story fetch-and-render path), not a whole second connection/credential the way TM
++ * Story's canon/wiki split is.
++ *
++ * Complements the lexical guard (storytab4-readonly-guard.test.js scans the SOURCE for
++ * write-shaped calls) by watching the WIRE instead: it records every command the shared
++ * MongoClient issues while attached, and asserts none is a write. Requires the client to
++ * be constructed with `{ monitorCommands: true }` (see server/db.js) for `commandStarted`
++ * to fire at all.
++ */
++
++// The MongoDB wire command names that mutate data or schema, exactly as they appear on a
++// `commandStarted` event's `commandName` — NOT driver method names (insertOne/insertMany
++// and bulkWrite() on a collection all issue `insert`/`update`/`delete`/`bulkWrite`). Two
++// vectors that do not decompose to a CRUD name and so are listed explicitly: the
++// client-level MongoClient.bulkWrite (server 8.0+, driver v7+, a single `bulkWrite` wire
++// command), and `collMod`/`mapReduce`, which mutate schema or can persist output. The
++// aggregate write vector ($out / $merge) surfaces on the wire as `aggregate` (a read
++// name), so it is caught by pipeline inspection in classifyCommand below and recorded as
++// the synthetic name `aggregateWrite`, a member of this set.
++export const WRITE_COMMANDS = Object.freeze(new Set([
++  'insert',
++  'update',
++  'delete',
++  'findAndModify',
++  'bulkWrite',
++  'create',
++  'createIndexes',
++  'collMod',
++  'mapReduce',
++  'drop',
++  'dropDatabase',
++  'dropIndexes',
++  'renameCollection',
++  'aggregateWrite', // synthetic: an aggregate carrying an $out / $merge stage
++]));
++
++// Classify one commandStarted event into a recorded name. Almost always this is just
++// event.commandName, but an aggregation that writes through an output stage ($out /
++// $merge) reports commandName 'aggregate' — a read name — so the pipeline is inspected
++// and the synthetic write name 'aggregateWrite' recorded instead.
++function classifyCommand(event) {
++  const name = event.commandName;
++  const pipeline = event.command && event.command.pipeline;
++  if (name === 'aggregate' && Array.isArray(pipeline)) {
++    const writesOut = pipeline.some(
++      (stage) => stage && (('$out' in stage) || ('$merge' in stage)),
++    );
++    if (writesOut) return 'aggregateWrite';
++  }
++  return name;
++}
++
++/**
++ * Attach a command monitor to a MongoClient and return `{ commands, detach }`:
++ * `commands` is a live array of the (classified) command names the client issues, in
++ * order; `detach` removes the listener. The client must be created with
++ * `{ monitorCommands: true }` for `commandStarted` to fire.
++ *
++ * `detach` is idempotent and MUST be called (in a `finally`/`afterEach`) whenever this is
++ * attached to the shared production client (`getClient()`), which every other suite in
++ * this repo's own vitest run also uses — an un-detached listener would keep recording
++ * (and leak) every later test file's commands too, since the whole suite runs
++ * `fileParallelism: false` / `maxWorkers: 1` against ONE real connection.
++ */
++export function attachCommandMonitor(client) {
++  const commands = [];
++  const listener = (event) => {
++    commands.push(classifyCommand(event));
++  };
++  client.on('commandStarted', listener);
++  let detached = false;
++  const detach = () => {
++    if (detached) return;
++    detached = true;
++    client.removeListener('commandStarted', listener);
++  };
++  return { commands, detach };
++}
++
++/**
++ * Throw if any recorded command name is a write. Pass the array returned by
++ * attachCommandMonitor (or any array of command names). Fail-loud: the error lists
++ * exactly which write command(s) leaked, so a regression is a hard, named test failure
++ * rather than a silent leak.
++ */
++export function assertNoWriteCommands(commandNames) {
++  const writes = commandNames.filter((name) => WRITE_COMMANDS.has(name));
++  if (writes.length) {
++    throw new Error(
++      `storytab.4 guard: write command(s) issued on a read-only path: ${writes.join(', ')}`,
++    );
++  }
++}
+diff --git a/server/tests/api-downtime-story-tab.test.js b/server/tests/api-downtime-story-tab.test.js
+index f43b218a..4914f166 100644
+--- a/server/tests/api-downtime-story-tab.test.js
++++ b/server/tests/api-downtime-story-tab.test.js
+@@ -30,8 +30,9 @@ import 'dotenv/config';
+ import { ObjectId } from 'mongodb';
+ import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
+ import { setupDb, teardownDb } from './helpers/db-setup.js';
+-import { getCollection } from '../db.js';
++import { getCollection, getClient } from '../db.js';
+ import * as dbModule from '../db.js';
++import { attachCommandMonitor, assertNoWriteCommands } from '../lib/write-command-monitor.js';
+ 
+ let app;
+ const realFetch = globalThis.fetch;
+@@ -414,4 +415,61 @@ describe('GET /api/downtime_submissions/story-tab', () => {
+       expect(res.body.downtimes[0]).not.toHaveProperty('raw_mongo_doc');
+     });
+   });
++
++  describe('Story storytab.4: read-only / no-write-back guard (AC 2)', () => {
++    // AC 2: exercises the FULL fetch-and-render path (TM Story mocked, the real local
++    // dedup Mongo query included) with a live commandStarted monitor attached to the
++    // real shared test client, and asserts zero write commands were issued anywhere on
++    // `tm_game` during it. Complements the lexical guard (storytab4-readonly-guard.test.js
++    // scans the SOURCE); this watches the WIRE.
++    it('issues no write command against Mongo while serving a full fetch + local-dedup + response cycle', async () => {
++      const { commands, detach } = attachCommandMonitor(getClient());
++      try {
++        globalThis.fetch = async () => ({
++          ok: true,
++          json: async () => ({
++            downtimes: [
++              { cycle_id: 'cyc-guard-1', narrative: 'Guard-path exercise, newer.' },
++              { cycle_id: 'cyc-guard-2', narrative: 'Guard-path exercise, older.' },
++            ],
++          }),
++        });
++        const res = await request(app)
++          .get('/api/downtime_submissions/story-tab?character_id=charGuard')
++          .set('X-Test-User', playerUser(['charGuard']))
++          .set('Authorization', 'Bearer tok');
++        expect(res.status).toBe(200);
++        expect(res.body.downtimes).toHaveLength(2);
++      } finally {
++        detach();
++      }
++      // Not a vacuous pass: the local dedup lookup issues a real `find`, so the monitor
++      // must have recorded SOMETHING — confirming it was actually live for this request,
++      // not attached-but-silent because monitorCommands somehow never fired.
++      expect(commands.length).toBeGreaterThan(0);
++      expect(() => assertNoWriteCommands(commands)).not.toThrow();
++    });
++
++    // Discrimination: proves the assertion above is a real guard and not vacuously
++    // green because the monitor never actually observes anything — same principle as
++    // write-command-monitor.test.js's own self-test, but against the REAL client this
++    // story wires monitorCommands:true onto (server/db.js).
++    it('(discrimination) the live monitor DOES catch a real write on the same client, proving the guard above is not vacuous', async () => {
++      const { commands, detach } = attachCommandMonitor(getClient());
++      let insertedId;
++      try {
++        const result = await getCollection('downtime_submissions').insertOne({
++          character_id: 'charGuardDiscrimination',
++          _test_seeded: true,
++          _purpose: 'storytab.4 AC2 discrimination proof — deleted immediately below',
++        });
++        insertedId = result.insertedId;
++        expect(commands).toContain('insert');
++        expect(() => assertNoWriteCommands(commands)).toThrow(/insert/);
++      } finally {
++        detach();
++        if (insertedId) await getCollection('downtime_submissions').deleteOne({ _id: insertedId });
++      }
++    });
++  });
+ });
+diff --git a/server/tests/story-downtime-fetch.test.js b/server/tests/story-downtime-fetch.test.js
+index 14270919..659379a4 100644
+--- a/server/tests/story-downtime-fetch.test.js
++++ b/server/tests/story-downtime-fetch.test.js
+@@ -42,6 +42,24 @@ describe('fetchStoryDowntimes', () => {
+     expect(result).toEqual({ ok: true, downtimes: [{ cycle_id: 'cyc-1' }] });
+   });
+ 
++  // Story storytab.4, AC 3: the cheapest possible guard — the outbound call itself must
++  // be a bodyless GET, never a write-shaped verb, regardless of what the Mongo-level
++  // guard (write-command-monitor.js) can or can't prove.
++  it('Story storytab.4 AC 3: issues a GET with no request body (no method override, no body key at all)', async () => {
++    let capturedOpts = null;
++    globalThis.fetch = async (url, opts) => {
++      capturedOpts = opts;
++      return { ok: true, json: async () => ({ downtimes: [] }) };
++    };
++    await fetchStoryDowntimes({ authorization: 'Bearer x', characterId: 'charA' });
++    expect(capturedOpts).not.toBeNull();
++    // No explicit method means the platform default, GET — asserting it is undefined
++    // (rather than just "not POST") catches a future edit adding ANY override, not only
++    // the obviously-wrong ones.
++    expect(capturedOpts.method).toBeUndefined();
++    expect(capturedOpts).not.toHaveProperty('body');
++  });
++
+   it('reads the base URL from TM_STORY_API_URL when set', async () => {
+     const prev = process.env.TM_STORY_API_URL;
+     process.env.TM_STORY_API_URL = 'https://tm-story-api.example.test';
+diff --git a/server/tests/storytab4-readonly-guard.test.js b/server/tests/storytab4-readonly-guard.test.js
+new file mode 100644
+index 00000000..862cf3ff
+--- /dev/null
++++ b/server/tests/storytab4-readonly-guard.test.js
+@@ -0,0 +1,142 @@
++/**
++ * server/tests/storytab4-readonly-guard.test.js — Story storytab.4.
++ *
++ * AC 1 (lexical guard): scans the storytab.1-introduced source for any Mongo
++ * write-shaped call. This repo has no prior lexical write-scan precedent of its own to
++ * extend (checked server/db.js and server/tests/ — none found; TM Story's own
++ * `server/canon-write-monitor.js`/`mongo-store.test.js` is the precedent this mirrors,
++ * see server/lib/write-command-monitor.js's own header), so this is a new, narrowly-
++ * scoped scanner — narrower than TM Story's "whole canon layer" scan because only ONE
++ * new code path needs guarding here, not a whole second connection.
++ *
++ * AC 4 (no local persistence): the client half of the same discipline — the merge
++ * function that touches TM-Story-sourced data must never write to localStorage,
++ * sessionStorage, IndexedDB, or issue a non-GET fetch of its own.
++ *
++ * Deliberately scoped to the SPECIFIC functions/handlers storytab.1 introduced, not
++ * whole files: `server/routes/downtime.js` and `public/js/tabs/story-tab.js` both also
++ * contain this repo's own EXISTING, legitimate write paths (the player-facing downtime
++ * form, POST/PUT/DELETE `/api/downtime_submissions`, frozen per D6 but still live code)
++ * — scanning those whole files would immediately misfire on code this story explicitly
++ * does not touch (see the story file's own "Explicitly NOT in scope").
++ */
++
++import { describe, it, expect } from 'vitest';
++import fs from 'node:fs';
++import path from 'node:path';
++import { fileURLToPath } from 'node:url';
++
++const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
++const read = rel => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
++
++// Mongo write-shaped calls, matched lexically against the driver method name (not the
++// wire command name — write-command-monitor.js's WRITE_COMMANDS is the wire-level twin
++// of this list, kept independently because a lexical scan and a runtime monitor are
++// deliberately two DIFFERENT defence layers, not one check expressed twice).
++const MONGO_WRITE_PATTERNS = [
++  { name: 'insertOne', re: /\.insertOne\s*\(/ },
++  { name: 'insertMany', re: /\.insertMany\s*\(/ },
++  { name: 'updateOne', re: /\.updateOne\s*\(/ },
++  { name: 'updateMany', re: /\.updateMany\s*\(/ },
++  { name: 'replaceOne', re: /\.replaceOne\s*\(/ },
++  { name: 'deleteOne', re: /\.deleteOne\s*\(/ },
++  { name: 'deleteMany', re: /\.deleteMany\s*\(/ },
++  { name: 'findOneAndUpdate', re: /\.findOneAndUpdate\s*\(/ },
++  { name: 'findOneAndReplace', re: /\.findOneAndReplace\s*\(/ },
++  { name: 'findOneAndDelete', re: /\.findOneAndDelete\s*\(/ },
++  { name: 'bulkWrite', re: /\.bulkWrite\s*\(/ },
++  { name: 'dropCollection', re: /\.drop\s*\(/ },
++  { name: 'dbCommand', re: /\.command\s*\(/ },
++  { name: 'aggregateOut', re: /\$out\b/ },
++  { name: 'aggregateMerge', re: /\$merge\b/ },
++];
++
++// Client-side persistence-shaped calls, for AC 4's "no local persistence anywhere" rule.
++const CLIENT_PERSISTENCE_PATTERNS = [
++  { name: 'localStorageSet', re: /localStorage\.setItem\s*\(/ },
++  { name: 'sessionStorageSet', re: /sessionStorage\.setItem\s*\(/ },
++  { name: 'indexedDB', re: /indexedDB/ },
++  { name: 'nonGetFetch', re: /fetch\([^;]*?method\s*:\s*['"](POST|PUT|PATCH|DELETE)['"]/ },
++];
++
++function scan(source, patterns) {
++  return patterns.filter(p => p.re.test(source)).map(p => p.name);
++}
++
++/** Extracts the substring between two unique literal markers (inclusive of start,
++ * exclusive of end), the same technique used to isolate one route handler out of a
++ * multi-route file. Throws if either marker is missing, so a rename/move of the guarded
++ * code silently disables the guard rather than the scan quietly covering nothing. */
++function extractBetween(source, startMarker, endMarker) {
++  const start = source.indexOf(startMarker);
++  if (start === -1) throw new Error(`extractBetween: start marker not found: ${startMarker}`);
++  const end = source.indexOf(endMarker, start + startMarker.length);
++  if (end === -1) throw new Error(`extractBetween: end marker not found: ${endMarker}`);
++  return source.slice(start, end);
++}
++
++describe('storytab4-readonly-guard: scanner self-test (discrimination)', () => {
++  it('MONGO_WRITE_PATTERNS actually flags a deliberately write-shaped fixture', () => {
++    const dirty = `await submissions().insertOne({ character_id: charId });`;
++    expect(scan(dirty, MONGO_WRITE_PATTERNS)).toEqual(['insertOne']);
++  });
++
++  it('MONGO_WRITE_PATTERNS stays silent on a genuinely read-only fixture', () => {
++    const clean = `const existingSubs = await submissions().find({ character_id: charOid }).toArray();`;
++    expect(scan(clean, MONGO_WRITE_PATTERNS)).toEqual([]);
++  });
++
++  it('catches an aggregate $out/$merge write vector, not just named CRUD methods', () => {
++    expect(scan(`col.aggregate([{ $out: 'leak' }])`, MONGO_WRITE_PATTERNS)).toEqual(['aggregateOut']);
++    expect(scan(`col.aggregate([{ $merge: { into: 'leak' } }])`, MONGO_WRITE_PATTERNS)).toEqual(['aggregateMerge']);
++  });
++
++  it('CLIENT_PERSISTENCE_PATTERNS actually flags a deliberately persisting fixture', () => {
++    expect(scan(`localStorage.setItem('x', JSON.stringify(subs));`, CLIENT_PERSISTENCE_PATTERNS))
++      .toEqual(['localStorageSet']);
++    expect(scan(`fetch('/api/foo', { method: 'POST', body: '{}' })`, CLIENT_PERSISTENCE_PATTERNS))
++      .toEqual(['nonGetFetch']);
++  });
++
++  it('CLIENT_PERSISTENCE_PATTERNS stays silent on a genuinely in-memory fixture', () => {
++    const clean = `const { downtimes, chapters } = await apiGet(\`/api/downtime_submissions/story-tab?character_id=\${char._id}\`);`;
++    expect(scan(clean, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
++  });
++
++  it('extractBetween throws (fails loud) rather than silently scanning nothing when a marker goes missing', () => {
++    expect(() => extractBetween('abc def ghi', 'zzz', 'ghi')).toThrow(/start marker not found/);
++    expect(() => extractBetween('abc def ghi', 'abc', 'zzz')).toThrow(/end marker not found/);
++  });
++});
++
++describe('storytab4-readonly-guard: AC 1, server-side lexical write scan', () => {
++  it('server/lib/story-downtime-fetch.js (the TM Story fetch helper, storytab.1) contains no Mongo write-shaped call', () => {
++    const source = read('server/lib/story-downtime-fetch.js');
++    expect(scan(source, MONGO_WRITE_PATTERNS)).toEqual([]);
++  });
++
++  it('the GET /story-tab route handler (server/routes/downtime.js) contains no Mongo write-shaped call', () => {
++    const source = read('server/routes/downtime.js');
++    const handler = extractBetween(
++      source,
++      `submissionsRouter.get('/story-tab',`,
++      `submissionsRouter.get('/hold-flags',`,
++    );
++    expect(scan(handler, MONGO_WRITE_PATTERNS)).toEqual([]);
++  });
++});
++
++describe('storytab4-readonly-guard: AC 4, client-side no-local-persistence scan', () => {
++  it('fetchAndMergeStoryTabDowntimes (public/js/tabs/story-tab.js) never persists the TM-Story-sourced merge past the in-memory render', () => {
++    const source = read('public/js/tabs/story-tab.js');
++    const fn = extractBetween(
++      source,
++      'async function fetchAndMergeStoryTabDowntimes(',
++      'export async function renderLatestReport(',
++    );
++    expect(scan(fn, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
++    // The merge itself is exactly one GET, matching AC 3's server-side twin.
++    expect(fn).toMatch(/apiGet\(/);
++    expect(fn).not.toMatch(/apiPost\(|apiPut\(|apiPatch\(/);
++  });
++});
+diff --git a/server/tests/write-command-monitor.test.js b/server/tests/write-command-monitor.test.js
+new file mode 100644
+index 00000000..a3152ca6
+--- /dev/null
++++ b/server/tests/write-command-monitor.test.js
+@@ -0,0 +1,104 @@
++/**
++ * server/tests/write-command-monitor.test.js — Story storytab.4, AC 2 self-test.
++ *
++ * Proves the monitor helper records commandStarted events and that
++ * assertNoWriteCommands actually FIRES on a write (discrimination) and passes on a
++ * read-only workload, before it is trusted anywhere live. No real Mongo: an EventEmitter
++ * stands in for the command-monitoring MongoClient (which is itself an EventEmitter),
++ * same approach as TM Story's own canon-write-monitor.test.js this mirrors.
++ */
++
++import { describe, it, expect } from 'vitest';
++import { EventEmitter } from 'node:events';
++import {
++  attachCommandMonitor,
++  assertNoWriteCommands,
++  WRITE_COMMANDS,
++} from '../lib/write-command-monitor.js';
++
++describe('attachCommandMonitor', () => {
++  it('records commandStarted command names in order', () => {
++    const client = new EventEmitter();
++    const { commands } = attachCommandMonitor(client);
++    client.emit('commandStarted', { commandName: 'find' });
++    client.emit('commandStarted', { commandName: 'aggregate' });
++    client.emit('commandStarted', { commandName: 'ping' });
++    expect(commands).toEqual(['find', 'aggregate', 'ping']);
++  });
++
++  it('detach removes the listener (no accumulation across tests) and is idempotent', () => {
++    const client = new EventEmitter();
++    const { commands, detach } = attachCommandMonitor(client);
++    client.emit('commandStarted', { commandName: 'find' });
++    expect(client.listenerCount('commandStarted')).toBe(1);
++    detach();
++    expect(client.listenerCount('commandStarted')).toBe(0);
++    // after detach, further commands are NOT recorded.
++    client.emit('commandStarted', { commandName: 'insert' });
++    expect(commands).toEqual(['find']);
++    // idempotent: a second detach is a harmless no-op.
++    expect(() => detach()).not.toThrow();
++    expect(client.listenerCount('commandStarted')).toBe(0);
++  });
++});
++
++describe('assertNoWriteCommands', () => {
++  it('passes for a read-only workload', () => {
++    expect(() => assertNoWriteCommands(['find', 'findOne', 'count', 'aggregate', 'ping'])).not.toThrow();
++  });
++
++  it('(discrimination) THROWS on any write command, naming it', () => {
++    expect(() => assertNoWriteCommands(['find', 'insert'])).toThrow(/write command\(s\) issued.*insert/);
++    expect(() => assertNoWriteCommands(['update', 'delete'])).toThrow(/update, delete/);
++  });
++
++  it('end-to-end via the monitor catches a wire write', () => {
++    const client = new EventEmitter();
++    const { commands } = attachCommandMonitor(client);
++    client.emit('commandStarted', { commandName: 'find' });
++    client.emit('commandStarted', { commandName: 'insert' }); // a leak
++    expect(() => assertNoWriteCommands(commands)).toThrow(/insert/);
++  });
++
++  it('a client-level bulkWrite wire command is caught (does not decompose to insert/update/delete)', () => {
++    const client = new EventEmitter();
++    const { commands } = attachCommandMonitor(client);
++    client.emit('commandStarted', { commandName: 'find' });
++    client.emit('commandStarted', { commandName: 'bulkWrite' });
++    expect(() => assertNoWriteCommands(commands)).toThrow(/bulkWrite/);
++  });
++
++  it('an aggregate with an $out stage is caught as a write; a plain aggregate is not', () => {
++    const client = new EventEmitter();
++    const { commands } = attachCommandMonitor(client);
++    client.emit('commandStarted', { commandName: 'aggregate', command: { pipeline: [{ $match: {} }] } });
++    expect(() => assertNoWriteCommands(commands)).not.toThrow();
++    client.emit('commandStarted', { commandName: 'aggregate', command: { pipeline: [{ $match: {} }, { $out: 'leak' }] } });
++    expect(commands).toEqual(['aggregate', 'aggregateWrite']);
++    expect(() => assertNoWriteCommands(commands)).toThrow(/aggregateWrite/);
++  });
++
++  it('an aggregate with a $merge stage is caught as a write', () => {
++    const client = new EventEmitter();
++    const { commands } = attachCommandMonitor(client);
++    client.emit('commandStarted', { commandName: 'aggregate', command: { pipeline: [{ $merge: { into: 'leak' } }] } });
++    expect(commands).toEqual(['aggregateWrite']);
++    expect(() => assertNoWriteCommands(commands)).toThrow(/aggregateWrite/);
++  });
++});
++
++describe('WRITE_COMMANDS', () => {
++  it('covers the mutating wire commands and is frozen', () => {
++    for (const cmd of ['insert', 'update', 'delete', 'findAndModify', 'bulkWrite',
++      'collMod', 'mapReduce', 'drop', 'createIndexes', 'renameCollection']) {
++      expect(WRITE_COMMANDS.has(cmd), `${cmd} must be treated as a write`).toBe(true);
++    }
++    // Reads are not writes. `aggregate` (the bare read name) is NOT a write — an
++    // aggregate that writes is caught by pipeline inspection above and recorded as the
++    // synthetic 'aggregateWrite', so the bare name stays a read.
++    for (const cmd of ['find', 'aggregate', 'count', 'distinct', 'ping', 'getMore']) {
++      expect(WRITE_COMMANDS.has(cmd), `${cmd} must NOT be treated as a write`).toBe(false);
++    }
++    expect(Object.isFrozen(WRITE_COMMANDS)).toBe(true);
++  });
++});

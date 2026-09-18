@@ -31,8 +31,13 @@ export async function connectDb() {
     tls: true,
     // Story storytab.4, AC 2: lets a test attach server/lib/write-command-monitor.js's
     // commandStarted listener to prove a code path (the storytab.1 TM-Story fetch-and-
-    // render path) issues zero write commands. No functional effect with no listener
-    // attached — negligible driver overhead, not a behaviour change.
+    // render path) issues zero write commands. Query results and driver behaviour are
+    // unchanged regardless of whether a listener is attached — but the option itself is
+    // NOT free even with none attached (Codex external review, 2026-09-19: the driver
+    // still timestamps and constructs/emits commandStarted/Succeeded/Failed events for
+    // every command on every consumer of this shared client, it does not check listener
+    // count first). That per-command event-emission overhead is negligible in practice,
+    // not literally inert.
     monitorCommands: true,
   });
   await client.connect();

@@ -1,14 +1,19 @@
 # Epic: Story Tab Reads TM Story's `tm_story` Database (Cross-Repo)
 
-## Status: in-progress — storytab.1 done 2026-09-18 (see that story's own Senior Developer Review
-## for the full account, including a real P0 security-test regression found and fixed); storytab.2
-## also done 2026-09-18 (a dedup hotfix + external-review fixes; see its own Senior Developer Review
-## — includes a real process incident where the external reviewer fabricated a decision attribution,
-## caught and corrected before Angelus was actually asked); storytab.3 also done 2026-09-18 (test-
-## coverage-only story — audited storytab.1/.2's existing tests first, found most ACs already
-## satisfied, filled 2 real verification gaps with 5 new tests, no production code changed; see its
-## own Dev Agent Record); storytab.4 not started. Still PRIORITY over
-## `../TM Story/specs/epic-73-papers-reading-experience.md`.
+## Status: DONE, 2026-09-19 — all 4 stories complete. storytab.1 done 2026-09-18 (see that story's own
+## Senior Developer Review for the full account, including a real P0 security-test regression found
+## and fixed); storytab.2 also done 2026-09-18 (a dedup hotfix + external-review fixes; see its own
+## Senior Developer Review — includes a real process incident where the external reviewer fabricated
+## a decision attribution, caught and corrected before Angelus was actually asked); storytab.3 also
+## done 2026-09-18 (test-coverage-only story — audited storytab.1/.2's existing tests first, found
+## most ACs already satisfied, filled 2 real verification gaps with 5 new tests, no production code
+## changed; see its own Dev Agent Record); storytab.4 done 2026-09-19 (the read-only/no-write-back
+## structural guard — a lexical source scanner plus a live Mongo command-monitor wired against the
+## real shared test client, one step further than TM Story's own equivalent precedent; external Codex
+## review found 5 real Medium + 3 real Low gaps in the guard's own coverage, all verified and patched
+## with prove-discrimination including 2 real-source injection probes; see its own Dev Agent Record).
+## Was PRIORITY over `../TM Story/specs/epic-73-papers-reading-experience.md`; that re-sequencing call
+## is now moot with this epic closed.
 
 ## Priority note (Angelus, direct, 2026-09-18, same night this epic was opened)
 
