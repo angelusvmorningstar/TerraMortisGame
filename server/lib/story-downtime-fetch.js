@@ -161,12 +161,24 @@ export function adaptStoryReport(report, characterId, rankFromNewest) {
   return sub;
 }
 
-/** The pseudo-chapter matching `adaptStoryReport()`'s own synthetic `chapter_id`. No real
- * label exists yet (Story storytab.2's own scope), so `label` is left unset, the existing
- * `cycleMap[...]?.label || \`Cycle ${id.slice(-4)}\`` fallback already handles that case. */
-export function syntheticChapterFor(characterId, rankFromNewest) {
-  return {
+/** The pseudo-chapter matching `adaptStoryReport()`'s own synthetic `chapter_id`. Found live,
+ * story storytab.5, 2026-09-19: leaving `label` unset let the pre-existing
+ * `cycleMap[...]?.label || \`Cycle ${id.slice(-4)}\`` fallback produce a garbled fragment of the
+ * synthetic id itself (e.g. "Cycle 95:1") on a real player's own STORY tab — that fallback was
+ * only ever meant for a genuinely unlabelled REAL chapter, never a synthetic one built to be
+ * sliced. `publishedAt` (TM Story's own `report.published_at`, added the same day for exactly
+ * this) gives a real, human month/year label instead, the same `{ month: 'short', year:
+ * 'numeric' }` format `downtime-tab.js`'s own `_cycleDate()` already uses elsewhere in this repo.
+ * Falls back to the old slice-based label only if `publishedAt` is missing/unparseable, never to
+ * a crash. */
+export function syntheticChapterFor(characterId, rankFromNewest, publishedAt) {
+  const chapter = {
     _id: `storytab.1:${characterId}:${rankFromNewest}`,
     game_number: SYNTHETIC_GAME_NUMBER_BASE - rankFromNewest,
   };
+  const d = publishedAt ? new Date(publishedAt) : null;
+  if (d && !Number.isNaN(d.getTime())) {
+    chapter.label = d.toLocaleDateString('en-AU', { month: 'short', year: 'numeric' });
+  }
+  return chapter;
 }

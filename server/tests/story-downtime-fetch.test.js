@@ -186,4 +186,28 @@ describe('syntheticChapterFor', () => {
     const c = syntheticChapterFor('charA', 50);
     expect(c.game_number).toBeGreaterThan(1000);
   });
+
+  // Found live, story storytab.5, 2026-09-19: a real player's own STORY tab showed "Cycle 95:1"
+  // for a genuinely published TM-Story-sourced entry, because the pre-existing
+  // `cycleMap[...]?.label || Cycle ${id.slice(-4)}` fallback sliced the SYNTHETIC id itself, never
+  // designed to be human-readable. Fixed by giving syntheticChapterFor a real label when a
+  // publishedAt date is available.
+  it('sets a human month/year label from a real publishedAt date, matching downtime-tab.js\'s own en-AU short-month format', () => {
+    // en-AU's own ICU short-month data abbreviates September to "Sept" (4 letters), unlike most
+    // other months ("Aug", "Oct") — a real locale quirk, not a bug. Confirmed this matches
+    // downtime-tab.js's own existing _cycleDate() output exactly, so kept consistent rather than
+    // hand-formatted to a different, app-inconsistent shape.
+    const c = syntheticChapterFor('charA', 0, '2026-09-18T09:47:48.625Z');
+    expect(c.label).toBe('Sept 2026');
+  });
+
+  it('omits label (falls back to the pre-existing slice-based fallback downstream) when publishedAt is missing', () => {
+    const c = syntheticChapterFor('charA', 0);
+    expect(c.label).toBeUndefined();
+  });
+
+  it('omits label when publishedAt is present but unparseable, never crashes', () => {
+    const c = syntheticChapterFor('charA', 0, 'not-a-real-date');
+    expect(c.label).toBeUndefined();
+  });
 });
