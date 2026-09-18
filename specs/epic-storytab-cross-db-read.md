@@ -1,8 +1,11 @@
 # Epic: Story Tab Reads TM Story's `tm_story` Database (Cross-Repo)
 
 ## Status: in-progress — storytab.1 done 2026-09-18 (see that story's own Senior Developer Review
-## for the full account, including a real P0 security-test regression found and fixed); storytab.2-4
-## not started. Still PRIORITY over `../TM Story/specs/epic-73-papers-reading-experience.md`.
+## for the full account, including a real P0 security-test regression found and fixed); storytab.2
+## also done 2026-09-18 (a dedup hotfix + external-review fixes; see its own Senior Developer Review
+## — includes a real process incident where the external reviewer fabricated a decision attribution,
+## caught and corrected before Angelus was actually asked); storytab.3-4 not started. Still PRIORITY
+## over `../TM Story/specs/epic-73-papers-reading-experience.md`.
 
 ## Priority note (Angelus, direct, 2026-09-18, same night this epic was opened)
 
@@ -190,6 +193,13 @@ speculatively.
 
 ## Explicitly not yet scoped
 
+- **TECH DEBT (Angelus's ruling, 2026-09-18, storytab.2):** TM Story's `GET /characters/:id/downtimes`
+  has no chapter/cycle-scoped filter, so storytab.2's dedup route always fetches a character's ENTIRE
+  TM Story history before locally filtering out chapters `tm_game` already covers — it cannot skip
+  the TM Story call even for a tm_game-only character. Fixing this for real needs a cross-repo change
+  to TM Story's own API (a filter parameter), out of storytab.2's own scope. Accepted as-is for now
+  (correct output, just an occasionally-unneeded network call); pick up as its own story if TM Story's
+  per-character history ever grows large enough for the always-fetch cost to matter in practice.
 - `archive-tab.js`'s identical staleness (see "Why this is a real, live, current bug" above) — flagged,
   not folded into any story here. A future story should scope it explicitly once this epic's pattern is
   proven.

@@ -249,7 +249,11 @@ submissionsRouter.post('/', requireFormNotRetiredForPlayers, rejectLegacyChapter
 // reason as `/hold-flags` above.
 submissionsRouter.get('/story-tab', async (req, res) => {
   const characterId = req.query.character_id;
-  if (!characterId) {
+  // A repeated ?character_id=a&character_id=b is parsed by Express as an array, which is
+  // truthy and would otherwise slip past the ownership check below (the array as a whole
+  // is compared, not either of its real values) and be forwarded to TM Story as a stringified
+  // pair. Reject it outright rather than accepting a malformed identity.
+  if (!characterId || typeof characterId !== 'string') {
     return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'character_id required' });
   }
   // Same ownership rule as `GET /` below: a player may only ask for their own character.
@@ -281,24 +285,41 @@ submissionsRouter.get('/story-tab', async (req, res) => {
   // Story's `wiki-schemas/downtime-cycles.schema.js` header, confirmed live). `tm_game`'s own
   // copy is preferred because it is the original, richer-shaped document (structured
   // `st_narrative.story_moment`/`home_report`, not TM Story's flattened reconstruction).
-  const charOid = parseId(characterId);
-  const existingSubs = await submissions()
-    .find(
-      { character_id: charOid ? { $in: [charOid, characterId] } : characterId },
-      { projection: CHAPTER_FK_PROJECTION },
-    )
-    .toArray();
+  // Only a PUBLISHED local copy counts as real coverage — a draft/incomplete local stub
+  // renders nothing of its own (mirrors the exact publish check `renderLatestReport`/
+  // `renderChronicle` already apply client-side: `published_outcome`, falling back to
+  // `st_review.outcome_visibility === 'published'`). Suppressing TM Story's genuinely
+  // published report in favour of a blank local row would trade one duplicate for a
+  // worse bug: no entry shown at all. Fails OPEN (treated as "no local coverage", TM
+  // Story's report is kept) on a local Mongo error, matching this whole route's existing
+  // philosophy of degrading gracefully rather than 500ing on an infrastructure hiccup.
   const existingChapterIdStrs = new Set();
-  for (const doc of existingSubs) {
-    for (const v of chapterFkValues(readChapterFk(doc))) {
-      existingChapterIdStrs.add(v instanceof ObjectId ? v.toHexString() : String(v));
+  try {
+    const charOid = parseId(characterId);
+    const existingSubs = await submissions()
+      .find(
+        { character_id: charOid ? { $in: [charOid, characterId] } : characterId },
+        { projection: { ...CHAPTER_FK_PROJECTION, published_outcome: 1, 'st_review.outcome_visibility': 1 } },
+      )
+      .toArray();
+    for (const doc of existingSubs) {
+      const isPublished = !!doc.published_outcome || doc.st_review?.outcome_visibility === 'published';
+      if (!isPublished) continue;
+      for (const v of chapterFkValues(readChapterFk(doc))) {
+        existingChapterIdStrs.add(v instanceof ObjectId ? v.toHexString() : String(v));
+      }
     }
+  } catch (err) {
+    console.error(`storytab.2: local dedup lookup failed for character ${characterId}, showing TM Story's reports unfiltered: ${err.message}`);
   }
-  const newDowntimes = downtimes.filter((report) => !existingChapterIdStrs.has(String(report.cycle_id)));
 
+  // Rank is TM Story's OWN response-order index, not the post-filter array's — an entry's
+  // synthetic chapter identity (and fallback label) must stay stable across requests
+  // regardless of whether some earlier, unrelated entry happens to get deduped this time.
   const subs = [];
   const chapters = [];
-  newDowntimes.forEach((report, rankFromNewest) => {
+  downtimes.forEach((report, rankFromNewest) => {
+    if (existingChapterIdStrs.has(String(report.cycle_id))) return;
     subs.push(adaptStoryReport(report, characterId, rankFromNewest));
     chapters.push(syntheticChapterFor(characterId, rankFromNewest));
   });

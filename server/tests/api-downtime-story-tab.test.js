@@ -14,15 +14,24 @@
  * chapter-id overlap). Most tests below still touch no Mongo document (an empty query
  * result behaves the same as "no dedup needed"); the dedup-specific tests seed and clean
  * up their own fixture rows.
+ *
+ * Codex external review (2026-09-18) found three real defects in that hotfix, since fixed
+ * and covered by the "Codex review fixes" describe block below: the local dedup check did
+ * not require the local doc to be PUBLISHED (an unpublished/draft local stub could suppress
+ * a genuinely published TM-Story report), a filtered-out entry shifted the RANK of every
+ * surviving entry after it (changing a stable report's synthetic chapter identity between
+ * otherwise-identical requests), and a local Mongo failure had no fallback (would 500 an
+ * otherwise-healthy request instead of degrading).
  */
 
-import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import 'dotenv/config';
 import { ObjectId } from 'mongodb';
 import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
 import { setupDb, teardownDb } from './helpers/db-setup.js';
 import { getCollection } from '../db.js';
+import * as dbModule from '../db.js';
 
 let app;
 const realFetch = globalThis.fetch;
@@ -183,6 +192,147 @@ describe('GET /api/downtime_submissions/story-tab', () => {
         .set('Authorization', 'Bearer tok');
       expect(res.status).toBe(200);
       expect(res.body.downtimes).toHaveLength(1);
+    });
+  });
+
+  describe('Codex review fixes (2026-09-18)', () => {
+    it('does NOT suppress a published TM-Story report when the matching local doc is unpublished (a draft/incomplete stub)', async () => {
+      const draftChapterId = new ObjectId();
+      const inserted = await getCollection('downtime_submissions').insertOne({
+        character_id: 'charC',
+        chapter_id: draftChapterId,
+        status: 'draft',
+        // No published_outcome, no st_review.outcome_visibility: 'published' —
+        // this local row would render NOTHING on its own.
+      });
+      FIXTURE_SUB_IDS.push(inserted.insertedId);
+
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          downtimes: [{ cycle_id: draftChapterId.toHexString(), narrative: 'The genuinely published TM Story copy.' }],
+        }),
+      });
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charC')
+        .set('X-Test-User', playerUser(['charC']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(res.body.downtimes).toHaveLength(1);
+      expect(res.body.downtimes[0].published_outcome).toBe('The genuinely published TM Story copy.');
+    });
+
+    it('still suppresses when the local doc is published via st_review.outcome_visibility rather than a top-level published_outcome', async () => {
+      const chapterId = new ObjectId();
+      const inserted = await getCollection('downtime_submissions').insertOne({
+        character_id: 'charD',
+        chapter_id: chapterId,
+        st_review: { outcome_visibility: 'published', outcome_text: 'Published via st_review only.' },
+      });
+      FIXTURE_SUB_IDS.push(inserted.insertedId);
+
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({ downtimes: [{ cycle_id: chapterId.toHexString(), narrative: 'Migrated duplicate.' }] }),
+      });
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charD')
+        .set('X-Test-User', playerUser(['charD']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(res.body.downtimes).toHaveLength(0);
+    });
+
+    it('preserves each surviving report\'s ORIGINAL TM Story rank, not its post-filter array position', async () => {
+      const overlapChapterId = new ObjectId();
+      const inserted = await getCollection('downtime_submissions').insertOne({
+        character_id: 'charE',
+        chapter_id: overlapChapterId,
+        published_outcome: 'Local copy of the overlapping chapter.',
+      });
+      FIXTURE_SUB_IDS.push(inserted.insertedId);
+
+      // TM Story's own order: [overlapping (rank 0), surviving (rank 1)]. If the route
+      // reindexed the post-filter array, the surviving entry would wrongly become rank 0.
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          downtimes: [
+            { cycle_id: overlapChapterId.toHexString(), narrative: 'Dropped, duplicate.' },
+            { cycle_id: 'cyc-surviving', narrative: 'Surviving, must keep rank 1.' },
+          ],
+        }),
+      });
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charE')
+        .set('X-Test-User', playerUser(['charE']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(res.body.downtimes).toHaveLength(1);
+      // The adapter's synthetic chapter_id embeds rankFromNewest verbatim
+      // (`storytab.1:<characterId>:<rankFromNewest>`) — asserting on it directly proves
+      // the ORIGINAL index 1 survived, not a reindexed 0.
+      expect(res.body.downtimes[0].chapter_id).toBe('storytab.1:charE:1');
+    });
+
+    it('degrades gracefully (fail-open: treats it as no local coverage) when the local dedup lookup itself fails, rather than 500ing', async () => {
+      const gcSpy = vi.spyOn(dbModule, 'getCollection').mockImplementation((name) => {
+        if (name !== 'downtime_submissions') return getCollection(name);
+        return { find: () => ({ toArray: () => Promise.reject(new Error('simulated local Mongo failure')) }) };
+      });
+      try {
+        globalThis.fetch = async () => ({
+          ok: true,
+          json: async () => ({ downtimes: [{ cycle_id: 'cyc-whatever', narrative: 'Still shown despite the local failure.' }] }),
+        });
+        const res = await request(app)
+          .get('/api/downtime_submissions/story-tab?character_id=charF')
+          .set('X-Test-User', playerUser(['charF']))
+          .set('Authorization', 'Bearer tok');
+        expect(res.status).toBe(200);
+        expect(res.body.downtimes).toHaveLength(1);
+        expect(res.body.downtimes[0].published_outcome).toBe('Still shown despite the local failure.');
+      } finally {
+        gcSpy.mockRestore();
+      }
+    });
+
+    it('rejects a repeated (array-shaped) character_id query parameter with 400 rather than proceeding with a malformed value', async () => {
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA&character_id=charB')
+        .set('X-Test-User', playerUser(['charA']));
+      expect(res.status).toBe(400);
+      expect(res.body.error).toBe('VALIDATION_ERROR');
+    });
+
+    // Codex review (Pass 2, Low): every other test in this file uses a non-ObjectId-shaped
+    // character_id ('charA' etc.), which only ever exercises the `character_id: characterId`
+    // (bare string) branch of the new query. A real character_id is a 24-hex ObjectId, which
+    // takes the OTHER branch (`character_id: { $in: [ObjectId, string] }`) — untested until now.
+    // Also covers the legacy `cycle_id`-only local Chapter FK (pre-cm-2b documents), the other
+    // half of `readChapterFk`'s dual-read fallback this dedup depends on.
+    it('dedups correctly for a real ObjectId-shaped character_id, against a local doc using the LEGACY cycle_id field (pre-cm-2b shape)', async () => {
+      const realCharId = new ObjectId();
+      const legacyChapterId = new ObjectId();
+      const inserted = await getCollection('downtime_submissions').insertOne({
+        character_id: realCharId,
+        cycle_id: legacyChapterId, // legacy FK name, no chapter_id at all
+        published_outcome: 'Local copy under the pre-cm-2b field name.',
+      });
+      FIXTURE_SUB_IDS.push(inserted.insertedId);
+
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          downtimes: [{ cycle_id: legacyChapterId.toHexString(), narrative: 'Migrated duplicate.' }],
+        }),
+      });
+      const res = await request(app)
+        .get(`/api/downtime_submissions/story-tab?character_id=${realCharId.toHexString()}`)
+        .set('X-Test-User', playerUser([realCharId.toHexString()]))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(res.body.downtimes).toHaveLength(0);
     });
   });
 });
