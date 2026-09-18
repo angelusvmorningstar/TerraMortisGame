@@ -28,6 +28,23 @@ const ACTION_TYPE_LABELS = {
   grow: 'Grow', acquisition: 'Acquisition',
 };
 
+// Story storytab.1: fetches TM Story's cross-app downtime data for ONE character and
+// merges it into the tm_game-sourced subs/cycles arrays this file already works with.
+// Never throws \u2014 a TM Story failure (network, non-2xx, or simply the caller not owning
+// the character on TM Story's own side) degrades to "your older games only" (AC 3), it
+// never blanks the Chronicle. The server route already adapts each entry into this
+// repo's own sub shape and mints a matching synthetic chapter, so the EXISTING
+// game_number-descending sort below needs no change to place them correctly (AC 6's
+// ruled provisional block rule \u2014 see server/lib/story-downtime-fetch.js's own header).
+async function fetchAndMergeStoryTabDowntimes(char, subs, cycles) {
+  try {
+    const { downtimes, chapters } = await apiGet(`/api/downtime_submissions/story-tab?character_id=${char._id}`);
+    return [[...subs, ...downtimes], [...cycles, ...chapters]];
+  } catch {
+    return [subs, cycles];
+  }
+}
+
 /**
  * Fetches and renders only the most recent published DT report for a character.
  * Used by the game app (index.html) Downtime tab.
@@ -49,6 +66,7 @@ export async function renderLatestReport(el, char) {
     el.innerHTML = `<p class="placeholder-msg">Failed to load: ${esc(err.message)}</p>`;
     return;
   }
+  [subs, cycles] = await fetchAndMergeStoryTabDowntimes(char, subs, cycles);
 
   const cycleMap = {};
   for (const c of cycles) cycleMap[String(c._id)] = c;
@@ -96,6 +114,7 @@ export async function renderStoryTab(el, char) {
     el.innerHTML = `<p class="placeholder-msg">Failed to load: ${esc(err.message)}</p>`;
     return;
   }
+  [subs, cycles] = await fetchAndMergeStoryTabDowntimes(char, subs, cycles);
 
   try {
     [questResponse, historyDoc] = await Promise.all([
@@ -175,7 +194,12 @@ export async function renderStoryTab(el, char) {
 
 // ── Chronicle ─────────────────────────────────────────────────────
 
-function renderChronicle(subs, cycles, char) {
+// Exported for Story storytab.1's own merge-and-sort test coverage (AC 9): this is the
+// one place the ruled provisional block rule (AC 6) actually has to prove itself. Feed it
+// a synthetic fixture mixing tm_game-shaped subs with adapter output and confirm the
+// EXISTING game_number-descending sort, unmodified, already places TM-Story-sourced
+// entries correctly.
+export function renderChronicle(subs, cycles, char) {
   const cycleMap = {};
   const cycleStatusMap = {};
   for (const c of cycles) {

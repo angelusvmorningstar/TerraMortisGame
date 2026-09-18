@@ -1,6 +1,8 @@
 # Epic: Story Tab Reads TM Story's `tm_story` Database (Cross-Repo)
 
-## Status: backlog — PRIORITY, pick up before `../TM Story/specs/epic-73-papers-reading-experience.md`
+## Status: in-progress — storytab.1 done 2026-09-18 (see that story's own Senior Developer Review
+## for the full account, including a real P0 security-test regression found and fixed); storytab.2-4
+## not started. Still PRIORITY over `../TM Story/specs/epic-73-papers-reading-experience.md`.
 
 ## Priority note (Angelus, direct, 2026-09-18, same night this epic was opened)
 

@@ -1,13 +1,9 @@
 # Story storytab.1: Inter-Service Downtime Fetch — Story Tab Reads TM Story
 
-## Status: backlog — (a)-vs-(b) RULED, 2026-09-18 (Angelus, direct: option (b), reversing this
-## story's own original recommendation below). **This story now DEPENDS ON `../TM Story/specs/
-## stories/74-1-downtime-allowlist-widen-for-cross-app-parity.md` landing first** — do not start
-## `storytab.1` itself until 74-1 is done, since the whole point of choosing (b) was ONE renderer
-## fed by ONE consistent shape, not a temporary (a)-shaped renderer to throw away once 74-1 lands.
-## The reasoning below (kept for the record) argued for (a) specifically to avoid this cross-repo
-## dependency — Angelus weighed that trade-off and chose correctness/one-code-path over shipping
-## storytab.1 sooner. Re-sequence: 74-1 first, then storytab.1.
+## Status: done, 2026-09-18 (Angelus, direct throughout the session: the (a)-vs-(b) ruling, the AC 6
+## sort-rule ruling, and the merit-ledger gap deferral). 74-1 landed first in TM Story, then this
+## story implemented (b): the adapter, the new fetch route, and the merge-and-sort. See "Senior
+## Developer Review" below for the full account, including a real regression found and fixed.
 
 ## Story
 
@@ -51,11 +47,38 @@ Pick ONE of:
   reviewed change in a DIFFERENT repo, gated on Angelus choosing this path and on that review
   happening, not something this story can assume will land in time.
 
-**This story's own recommendation: start with (a).** It has zero cross-repo dependency, ships entirely
-within this repo, and does not gate this story's own delivery on a security review in a different
-repo. (b) remains available as a later simplification if Angelus wants ONE renderer long-term — but
-do not block this story on it. Confirm this choice explicitly in the Dev Agent Record when built; if a
-different call is made, record why.
+**SUPERSEDED by the Status line above: Angelus ruled (b) directly, 2026-09-18, before this story was
+built.** `../TM Story/specs/stories/74-1-downtime-allowlist-widen-for-cross-app-parity.md` is done
+(2026-09-18, same session): `buildDowntimeReport()` now exposes `story_moment`/`home_report` (bare
+`.response` strings, flat at the report's own top level, not nested under `st_narrative` the way this
+repo's `sub` shape has them), `cacophony_savvy[]` (`{slot, response}` entries), and
+`outcome_summary`/`pool_status` on `projects_resolved`/`merit_actions_resolved` entries.
+
+**This does NOT mean zero adapter work.** TM Story's report shape is still not byte-identical to
+this repo's own `tm_game.downtime_submissions` document shape `renderOutcomeWithCards()` reads
+directly:
+
+- Declared project/sphere content: TM Story returns `report.projects[]`/`report.spheres[]` as
+  `{slot, action, title, description, outcome}` arrays; this repo's own renderer reads flat
+  `sub.responses.project_{n}_title`/`project_{n}_action` fields (or `sub[...]` directly, per
+  `story-tab.js:396`). AC1's new helper must map slot -> `n` when building the adapted `sub`.
+- Narrative fields: TM Story's `report.story_moment`/`report.home_report` are flat strings; this
+  repo's renderer reads `sub.st_narrative.story_moment.response`/`.home_report.response`. The adapter
+  re-nests them.
+- `report.cacophony_savvy[]` entries are `{slot, response}`; this repo's renderer reads `.response`
+  off each entry directly (`s?.response`), so the extra `slot` key is harmless and needs no stripping.
+- `report.projects_resolved`/`.merit_actions_resolved` already carry `outcome_summary`/`pool_status`
+  alongside the scalars this repo's renderer already reads (`action_type`, `outcome`,
+  `outcome_confirmed`, `no_roll`, `player_facing_note`, `pool`, `roll`), no further mapping needed
+  there beyond the container key names, which already match.
+- `acquisitions_resolved` (Resources/Skill Acquisition fixed slots) has no TM Story equivalent;
+  leave undefined for a TM-Story-sourced entry; the renderer already treats it as optional.
+
+So the actual shape of AC1's new helper is: fetch TM Story's report, then ADAPT it into a
+`tm_game`-shaped `sub` object (same field names `renderOutcomeWithCards()` already reads), rather
+than either (a)'s full second renderer or a naive pass-through assuming identical shapes. This keeps
+Sally's "one renderer, one visual treatment" requirement (the whole point of choosing (b)) while
+still doing real, testable mapping work.
 
 ## Acceptance Criteria
 
@@ -76,19 +99,29 @@ different call is made, record why.
    generic-message convention for exactly this class of failure, per `../TM Story/public/js/
    standing-prompts/archive-load.js`'s own header comment on why raw transport errors never reach a
    player-facing string) — never surface TM Story's raw error text to the player.
-4. **The (a)-vs-(b) decision above is made and recorded** (default (a) unless a documented reason to
-   choose (b) emerges during implementation) before any rendering code is written.
+4. **The (a)-vs-(b) decision is (b), already ruled** (see the Status line and the superseded-decision
+   note above): build the ADAPTER (TM Story report shape -> `tm_game`-shaped `sub` fields) described
+   there, feeding the EXISTING `renderOutcomeWithCards()` unchanged. Do not build a second renderer.
 5. **`renderLatestReport()` and `renderStoryTab()`** (`public/js/tabs/story-tab.js:31-78`, `:80+`) both
    consume the merged result: this repo's own `tm_game.downtime_submissions` entries (existing
    behaviour, unchanged) PLUS TM Story-sourced entries (new), as ONE list.
-6. **Sort-before-render, never fetch-and-append.** The merged list is sorted ONCE, by real chronology
-   (this repo's own `cycleMap[...].game_number` for `tm_game`-sourced entries; TM Story's own already-
-   sorted response order, or an equivalent real timestamp/game-number signal, for TM Story-sourced
-   entries — do NOT re-derive a TM Story entry's position from anything client-side that TM Story's own
-   `downtimeSortKey()` doesn't already guarantee), before either `renderLatestReport()`'s "take
-   element 0" or `renderStoryTab()`'s full-list render happens. Two separately-fetched, separately-
-   appended lists (`tm_game` results first, TM Story results tacked on the end regardless of actual
-   date) is the specific anti-pattern this AC forbids.
+6. **Sort-before-render, never fetch-and-append blindly.** RULED, 2026-09-18 (Angelus, direct): TM
+   Story's own report carries NO per-entry timestamp (`buildDowntimeReport()` never exposes
+   `published_at`/`submitted_at` on the report object itself, only the ARRAY's overall order, which
+   its own `downtimeSortKey()` already guarantees is most-recent-first), so a genuinely general,
+   per-entry cross-source chronological comparison has no real key to compare on today. Rather than
+   reopening the just-closed 74-1 to add one, the merge uses a PROVISIONAL BLOCK RULE, grounded in a
+   real, checked fact rather than an arbitrary append: `tm_game.downtime_submissions` has been frozen
+   since Game 7 (D6, 2026-08-24/25) and every TM Story submission is Game 8 or later, so EVERY
+   TM-Story-sourced entry is, in fact, more recent than EVERY `tm_game`-sourced entry today. The
+   merged list is therefore: TM Story-sourced entries first (in TM Story's own already-sorted
+   response order, untouched), then `tm_game`-sourced entries (in this repo's own existing
+   `cycleMap[...].game_number`-descending order, untouched), ONE sort decision, made once, before
+   either `renderLatestReport()`'s "take element 0" or `renderStoryTab()`'s full-list render happens,
+   not two independently fetched-and-displayed lists. This is a real, checked ordering for the current
+   data, not a hardcoded assumption papering over a mismatch, but it IS block-level, not per-entry,
+   and must be revisited (a genuine per-entry key added to TM Story's report) if `tm_game` ever takes
+   a submission again or this fact stops holding. Code comments at the merge site must say so plainly.
 7. **Identical per-entry treatment regardless of source.** A TM Story-sourced entry must never render
    as a visibly thinner/sparser card than a `tm_game`-sourced one purely because of which source it
    came from — per-field omission (a field genuinely absent on either side) is fine and already how
@@ -96,10 +129,14 @@ different call is made, record why.
    never read because of which renderer got chosen is not.
 8. **One loading state, one error state, one empty state**, covering the merged result — not
    independent states per source.
-9. New tests cover: the merge-and-sort logic with a synthetic fixture proving a TM Story-sourced entry
-   dated more recently than a `tm_game`-sourced one sorts first (and vice versa); the TM-Story-call-
-   fails-gracefully path (AC 3); and whichever renderer path (a) or (b) was chosen, a rendering test
-   proving a TM-Story-shaped input produces the expected visual output.
+9. New tests cover: the merge-and-sort logic, proving ALL TM-Story-sourced entries sort ahead of ALL
+   `tm_game`-sourced entries regardless of fixture insertion order (the block rule, AC 6), AND that
+   each source's own internal order survives the merge untouched (TM Story's own response order;
+   `tm_game`'s own `game_number`-descending order); the TM-Story-call-fails-gracefully path (AC 3);
+   and the ADAPTER (TM Story report -> `tm_game`-shaped `sub`), proving a real TM Story report shape
+   (declared slots, `story_moment`/`home_report`/`cacophony_savvy`, `outcome_summary`/`pool_status`)
+   produces a `sub` object `renderOutcomeWithCards()` renders identically to an equivalent native
+   `tm_game` submission.
 10. British English, no em-dashes, in every new string.
 
 ## Explicitly NOT in scope
@@ -123,7 +160,71 @@ different call is made, record why.
 Check `public/js/data/helpers.js` for an existing `parseOutcomeSections` before porting TM Story's
 version wholesale — TM Story's own code comment on its `archive-format.js:67-72` claims to be "a
 faithful port" of exactly this repo's function, which would mean the logic to reuse for option (a)
-already exists here and needs only a second call site, not a new implementation.
+already exists here and needs only a second call site, not a new implementation. (Superseded by the
+(b) ruling; this note is kept only because it also confirms the two repos' section-parsing logic was
+already reconciled once before, relevant background for anyone later auditing `published_outcome`
+parity.)
+
+### Real finding, 2026-09-18 (implementation session): a genuine gap in AC 7, flagged not silently fixed
+
+`renderMeritSummarySection()`'s newer grouped-ledger path (story-tab.js ~552-614) does not read
+`merit_actions_resolved[i]` in isolation, it zips it against `buildPlayerMeritActions(sub)[i]`, a
+DECLARED-side reconstruction built from FIVE separately-shaped flat-index conventions
+(`sphere_{n}_merit`/`status_{n}_merit`/`contact_{n}_merit`/retainer/resource fields). TM Story's own
+`report.contacts[]`/`.retainers[]`/`.spheres[]` (already exposed pre-74.1) use genuinely different
+field names (`{merit, supporting_info, question}`/`{merit, task_type, task_description}`) than those
+five conventions expect, and reconciling all five correctly is materially larger than mapping the
+fields this story's own ACs actually named. Confirmed live via a real render test (not assumed): a
+TM-Story-sourced merit resolution's `outcome_summary` survives the adapter (proven directly) but does
+not currently reach the ledger's rendered output, because no matching declared entry exists at the
+same array index for it to zip against.
+
+**Scope call, this session**: NOT fixed here, flagged for Angelus rather than either silently
+shipping broken or unilaterally absorbing a materially larger mapping job. Project-action cards
+(`projects_resolved`, story_moment, home_report, cacophony_savvy) are UNAFFECTED; `outcome_summary`
+is a merit-action-only field on TM Game's own renderer; the project-card path never reads it. Logged
+here rather than in a separate deferred-work doc since it is this story's own AC 7 that is not yet
+fully met, not an unrelated tech-debt item.
+
+## Senior Developer Review (completed 2026-09-18, same session, inline, no external Codex pass)
+
+Implemented directly (inline, not delegated: a coordinate/architecture-sensitive cross-repo story):
+
+- `server/lib/story-downtime-fetch.js` (new): `fetchStoryDowntimes()` (the server-to-server GET,
+  forwarding the caller's own bearer token verbatim, never throwing), `adaptStoryReport()` (TM Story
+  report -> `tm_game`-shaped pseudo-submission), `syntheticChapterFor()` (the block-rule sort key).
+- `server/routes/downtime.js`: new `GET /story-tab` route, deliberately separate from the general
+  `GET /` (which also serves this repo's own ST review/edit workflows against REAL documents).
+- `public/js/tabs/story-tab.js`: `renderLatestReport()`/`renderStoryTab()` now merge in the new
+  route's result before the EXISTING game_number-descending sort runs; `renderChronicle` exported for
+  test coverage.
+
+**A genuine regression found and fixed during this review, not by a subagent (there was no
+subagent; caught on a full-suite run)**: the new route's own ownership gate is a 7th
+`!isStRole(req.user)` occurrence in `downtime.js`, which broke `p0-coordinator-role-ownership-bypass
+.test.js`'s exact-count assertion (a real P0 security regression test from a 2026-09-01 audit).
+Verified via a git-stash baseline comparison that this was the ONLY test genuinely caused by this
+story's diff (the full suite's other ~124 failing tests, across ~25 files, reproduce identically on
+an unmodified `main` checkout, confirmed by running the same test files before and after stashing
+this story's changes). Fixed by updating that test's expected count from 6 to 7 with a comment
+explaining the new, legitimate gate, not by loosening or removing the assertion.
+
+FINAL GATE: this story's own 3 new test files (44 tests) plus the corrected P0 test (16 tests) all
+pass in isolation and together. Full-suite regression count is unchanged from the pre-existing
+baseline (verified via stash comparison) aside from the one P0 test now correctly reflecting 7 gates.
+No `public/` visual verification was performed beyond the render-output string assertions in
+`story-tab-cross-app-render.test.js` (no live browser render this session); recommend a manual
+Story-tab check against a real character with both `tm_game` and `tm_story` published cycles before
+this ships to Netlify.
+
+**Known gap, not fixed here (Angelus's own call, 2026-09-18): merit-action outcome summaries
+(`outcome_summary`/`pool_status` on `merit_actions_resolved`) do not yet reach the rendered Story tab
+for TM-Story-sourced entries** (see the "Real finding" note above). Documented, deferred, not
+silently shipped broken.
+
+backlog -> ready-for-dev -> done (single session, no intermediate commit; the (a)-vs-(b) and AC 6
+sort-rule decisions were made live during this session via direct questions to Angelus, not
+pre-ruled).
 
 ## References
 

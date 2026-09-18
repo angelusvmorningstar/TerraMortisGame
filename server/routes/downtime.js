@@ -50,6 +50,8 @@ import {
   rejectLegacyChapterFk,
   withChapterFk,
 } from '../helpers/chapter-fk.js';
+// Story storytab.1: TM Story cross-app downtime fetch + adapter.
+import { fetchStoryDowntimes, adaptStoryReport, syntheticChapterFor } from '../lib/story-downtime-fetch.js';
 
 function parseId(id) {
   try {
@@ -235,6 +237,41 @@ submissionsRouter.post('/', requireFormNotRetiredForPlayers, rejectLegacyChapter
 // server-side too would require knowing every character ID in scope,
 // which is unnecessary work.
 //
+// Story storytab.1: TM Story-sourced downtimes for ONE character, adapted into this
+// repo's own `tm_game`-shaped pseudo-submissions (see server/lib/story-downtime-fetch.js
+// for the full rationale). A DEDICATED endpoint rather than folding this into `GET /`
+// below deliberately: that route also serves this repo's own ST review/edit workflows
+// (PUT /:id, DELETE /:id) against REAL `tm_game.downtime_submissions` documents, and a
+// synthetic pseudo-submission mixed into that array risks an ST attempting to edit one.
+// Read-only: exactly one outbound GET to TM Story, no write anywhere (AC 2; Story
+// storytab.4 owns the structural proof). Registered BEFORE `GET /` for the same routing
+// reason as `/hold-flags` above.
+submissionsRouter.get('/story-tab', async (req, res) => {
+  const characterId = req.query.character_id;
+  if (!characterId) {
+    return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'character_id required' });
+  }
+  // Same ownership rule as `GET /` below: a player may only ask for their own character.
+  // An ST previewing another character's Story tab is allowed through here (matching this
+  // route's own general ST bypass). If that ST is not TM Story's own named superviewer,
+  // TM Story's OWN ownership gate will simply return nothing for this call, which the
+  // graceful-degradation path below already handles the same as any other TM Story failure.
+  if (!isStRole(req.user)) {
+    const ids = (req.user.character_ids || []).map(String);
+    if (!ids.includes(String(characterId))) {
+      return res.status(403).json({ error: 'FORBIDDEN', message: 'Not your character' });
+    }
+  }
+  const { downtimes } = await fetchStoryDowntimes({ authorization: req.headers.authorization, characterId });
+  const subs = [];
+  const chapters = [];
+  downtimes.forEach((report, rankFromNewest) => {
+    subs.push(adaptStoryReport(report, characterId, rankFromNewest));
+    chapters.push(syntheticChapterFor(characterId, rankFromNewest));
+  });
+  res.json({ downtimes: subs, chapters });
+});
+
 // Registered BEFORE `GET /` so Express routes `/hold-flags` to this
 // handler rather than treating it as a query of the list endpoint.
 submissionsRouter.get('/hold-flags', async (req, res) => {

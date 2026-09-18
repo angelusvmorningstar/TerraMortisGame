@@ -1,0 +1,129 @@
+/**
+ * API tests, GET /api/downtime_submissions/story-tab (Story storytab.1).
+ *
+ * A dedicated, read-only endpoint: fetches a character's TM Story-sourced downtimes
+ * server-to-server, forwarding the caller's own bearer token, and adapts them into
+ * this repo's own tm_game-shaped pseudo-submissions. Touches no Mongo collection at
+ * all, so no db-setup fixtures are needed here, only auth/ownership and the mocked
+ * outbound TM Story call.
+ */
+
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
+import request from 'supertest';
+import 'dotenv/config';
+import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
+import { setupDb, teardownDb } from './helpers/db-setup.js';
+
+let app;
+const realFetch = globalThis.fetch;
+
+beforeAll(async () => {
+  await setupDb();
+  app = createTestApp();
+});
+
+afterEach(() => { globalThis.fetch = realFetch; });
+
+afterAll(async () => {
+  await teardownDb();
+});
+
+describe('GET /api/downtime_submissions/story-tab', () => {
+  it('returns 400 when character_id is missing', async () => {
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab')
+      .set('X-Test-User', playerUser(['charA']));
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('VALIDATION_ERROR');
+  });
+
+  it('returns 403 when a player requests a character that is not their own', async () => {
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charB')
+      .set('X-Test-User', playerUser(['charA']));
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe('FORBIDDEN');
+  });
+
+  it('never calls TM Story at all for a rejected (403) request, read-only means read-only, not "fetch then discard"', async () => {
+    let called = false;
+    globalThis.fetch = async () => { called = true; return { ok: true, json: async () => ({ downtimes: [] }) }; };
+    await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charB')
+      .set('X-Test-User', playerUser(['charA']));
+    expect(called).toBe(false);
+  });
+
+  it('forwards the caller\'s own Authorization header verbatim to TM Story, for their own character', async () => {
+    let capturedUrl = null, capturedAuth = null;
+    globalThis.fetch = async (url, opts) => {
+      capturedUrl = url;
+      capturedAuth = opts.headers.Authorization;
+      return { ok: true, json: async () => ({ downtimes: [] }) };
+    };
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charA')
+      .set('X-Test-User', playerUser(['charA']))
+      .set('Authorization', 'Bearer real-player-token-xyz');
+    expect(res.status).toBe(200);
+    expect(capturedUrl).toMatch(/\/api\/characters\/charA\/downtimes$/);
+    expect(capturedAuth).toBe('Bearer real-player-token-xyz');
+  });
+
+  it('adapts a real TM Story report into a merged { downtimes, chapters } response, most-recent first', async () => {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        downtimes: [
+          { cycle_id: 'cyc-newer', narrative: 'The newer cycle.' },
+          { cycle_id: 'cyc-older', narrative: 'The older cycle.' },
+        ],
+      }),
+    });
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charA')
+      .set('X-Test-User', playerUser(['charA']))
+      .set('Authorization', 'Bearer tok');
+    expect(res.status).toBe(200);
+    expect(res.body.downtimes).toHaveLength(2);
+    expect(res.body.chapters).toHaveLength(2);
+    expect(res.body.downtimes[0].published_outcome).toBe('The newer cycle.');
+    expect(res.body.downtimes[1].published_outcome).toBe('The older cycle.');
+    // AC 6's ruled block rule: TM Story's own already-correct order survives as a
+    // strictly-decreasing synthetic game_number, so the EXISTING client-side
+    // game_number-descending sort places these in the same order untouched.
+    const chapterMap = Object.fromEntries(res.body.chapters.map(c => [c._id, c]));
+    expect(chapterMap[res.body.downtimes[0].chapter_id].game_number)
+      .toBeGreaterThan(chapterMap[res.body.downtimes[1].chapter_id].game_number);
+  });
+
+  it('an ST may request any character\'s story-tab data (bypasses the ownership check on THIS side)', async () => {
+    globalThis.fetch = async () => ({ ok: true, json: async () => ({ downtimes: [] }) });
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=someone-elses-char')
+      .set('X-Test-User', stUser())
+      .set('Authorization', 'Bearer st-tok');
+    expect(res.status).toBe(200);
+  });
+
+  it('degrades gracefully to an empty merged result when TM Story is unreachable (AC 3, never a 500, never a leak of TM Story\'s raw error)', async () => {
+    globalThis.fetch = async () => { throw new Error('ECONNREFUSED 10.0.0.1:443'); };
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charA')
+      .set('X-Test-User', playerUser(['charA']))
+      .set('Authorization', 'Bearer tok');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ downtimes: [], chapters: [] });
+    expect(JSON.stringify(res.body)).not.toMatch(/ECONNREFUSED|10\.0\.0\.1/);
+  });
+
+  it('degrades gracefully when TM Story 403s the caller on its own side (e.g. previewing a character this bearer token does not own there)', async () => {
+    globalThis.fetch = async () => ({ ok: false, status: 403 });
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charA')
+      .set('X-Test-User', playerUser(['charA']))
+      .set('Authorization', 'Bearer tok');
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual({ downtimes: [], chapters: [] });
+  });
+});

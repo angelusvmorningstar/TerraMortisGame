@@ -85,7 +85,11 @@ describe('P0 — each file now gates on !isStRole(req.user), or a route-level re
   it('downtime.js imports isStRole and uses !isStRole(req.user) at least 6 times (one per fixed gate)', () => {
     expect(DOWNTIME).toMatch(/import\s*\{[^}]*\bisStRole\b[^}]*\}\s*from\s*'\.\.\/middleware\/auth\.js'/);
     const count = (DOWNTIME.match(/!isStRole\(req\.user\)/g) || []).length;
-    expect(count).toBe(6);
+    // Story storytab.1 (2026-09-18) added a 7th gate: GET /story-tab restricts a
+    // non-ST caller to their own character_id, the SAME pattern every other gate
+    // this test counts already follows. Raised from 6 to 7 deliberately, reviewed
+    // alongside that story's own security review, not a silent drift.
+    expect(count).toBe(7);
   });
 
   it('history.js uses !isStRole(req.user) at least 3 times (GET/POST/PUT)', () => {
