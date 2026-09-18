@@ -2208,3 +2208,34 @@ development_status:
   # pagination/faceting - this is a rare-event log, not a stream. No UI panel:
   # the issue's own AC3 allows "as simple as a read endpoint".
   issue-1132-write-once-violation-audit-log: done                # Codex-reviewed 2026-08-31 (no High, 2 Medium/9 Low, 2 patched+prove-discriminated, 1 deferred to issue-1140, rest dismissed/non-findings with evidence). Full detail: specs/stories/issue-1132-write-once-violation-audit-log.md
+
+  # ── Epic: Story Tab Reads TM Story's tm_story Database (cross-repo) ───────
+  # OPENED 2026-09-18. Angelus: "I also want Story on TM game to point to the
+  # tm_story database for the most recent downtime." Investigated same night by
+  # Winston as part of a wider Papers/Archive investigation (Sally/Winston/Dana),
+  # turned into stories by Bob (Scrum Master). Full epic doc:
+  # specs/epic-storytab-cross-db-read.md — read it first, it documents WHY this
+  # is a live current bug (tm_game.downtime_submissions frozen since Game 7,
+  # every real downtime since Game 8 filed natively in tm_story), the rejected
+  # alternatives (a second direct Mongo connection; a browser-side merge; a new
+  # API gateway), and the chosen shape (server-to-server HTTP call to TM Story's
+  # own already-leak-gated GET /api/characters/:id/downtimes, bearer token
+  # forwarded). Four stories in this repo; a fifth (the allowlist-widening
+  # option) lives in ../TM Story's own specs, gated on this epic's own
+  # storytab.1 story choosing that path. None story-created via
+  # bmad-create-story yet; each file is a complete, self-contained spec.
+  #
+  # PRIORITY, 2026-09-18 (Angelus, direct, same night this epic was opened):
+  # "the archive can be a little bit broken, the priority is getting the
+  # downtimes out." THIS is the priority epic — pick this up BEFORE ../TM
+  # Story's epic-73-papers-reading-experience. Real downtimes are currently
+  # invisible on TM Game's own Story tab for every game since Game 8; that is
+  # the actual "players can't see their downtime at all" blocker, versus
+  # epic-73's readability/cosmetic polish on a page that at least technically
+  # shows the data. This is an explicit re-sequencing call from Angelus, not
+  # this epic's own default ordering.
+  epic-storytab-cross-db-read: backlog                            # PRIORITY — pick up before ../TM Story's epic-73-papers-reading-experience, per Angelus's direct 2026-09-18 call above.
+  storytab.1.inter-service-downtime-fetch: backlog        # Foundation story — makes the explicit (a) build-a-second-renderer vs (b) ask-TM-Story-to-widen-its-allowlist call. Full spec: specs/stories/storytab.1.inter-service-downtime-fetch.story.md.
+  storytab.2.chapter-routing-rule: backlog                 # Depends on storytab.1. Which chapters read tm_game vs tm_story, driven by real data not a hardcoded game-number cutoff. Full spec: specs/stories/storytab.2.chapter-routing-rule.story.md.
+  storytab.3.leak-gate-test-coverage: backlog              # Can build alongside storytab.1. Proves the new merge path can't leak another player's TM-Story-sourced data. Full spec: specs/stories/storytab.3.leak-gate-test-coverage.story.md.
+  storytab.4.read-only-no-writeback-guard: backlog         # Can build alongside storytab.1. Structural guard against ever writing TM-Story-sourced data into tm_game. Full spec: specs/stories/storytab.4.read-only-no-writeback-guard.story.md.
