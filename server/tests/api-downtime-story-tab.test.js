@@ -335,4 +335,83 @@ describe('GET /api/downtime_submissions/story-tab', () => {
       expect(res.body.downtimes).toHaveLength(0);
     });
   });
+
+  describe('Story storytab.3: leak-gate test coverage', () => {
+    // AC 2: the forwarded bearer token must be THIS REQUEST's own Authorization header,
+    // not a value that merely happens to match one fixed string across every test above.
+    // Two distinct requests, two distinct tokens, each forwarded token must track its own
+    // request rather than being hardcoded anywhere on the path from inbound to outbound.
+    it('forwards a DIFFERENT caller\'s own Authorization header on a different request, proving the value tracks the inbound request rather than a fixed string', async () => {
+      const captured = [];
+      globalThis.fetch = async (url, opts) => {
+        captured.push(opts.headers.Authorization);
+        return { ok: true, json: async () => ({ downtimes: [] }) };
+      };
+      await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA')
+        .set('X-Test-User', playerUser(['charA']))
+        .set('Authorization', 'Bearer token-one');
+      await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA')
+        .set('X-Test-User', playerUser(['charA']))
+        .set('Authorization', 'Bearer token-two');
+      expect(captured).toEqual(['Bearer token-one', 'Bearer token-two']);
+    });
+
+    // AC 3: a TM-Story-side auth failure must degrade to "no entries shown", never a
+    // second attempt with different or absent credentials. The existing "degrades
+    // gracefully" tests only assert the RESPONSE shape; these assert the CALL COUNT,
+    // which is the part that would actually catch a retry-on-failure regression.
+    it('calls TM Story exactly once on a network failure — never retries without auth or with different credentials', async () => {
+      let callCount = 0;
+      globalThis.fetch = async () => { callCount += 1; throw new Error('ECONNREFUSED'); };
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA')
+        .set('X-Test-User', playerUser(['charA']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(callCount).toBe(1);
+    });
+
+    it('calls TM Story exactly once on TM Story\'s own 403 — never retries with a different identity', async () => {
+      let callCount = 0;
+      globalThis.fetch = async () => { callCount += 1; return { ok: false, status: 403 }; };
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA')
+        .set('X-Test-User', playerUser(['charA']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      expect(callCount).toBe(1);
+    });
+
+    // AC 4: the merged response sent to the browser must be a pure consumer of whatever
+    // TM Story's own allowlist returned — never a wider passthrough. adaptStoryReport()
+    // builds its output from named fields only (unit-tested directly in
+    // story-downtime-fetch.test.js), so this is the black-box confirmation at the wire:
+    // an unexpected field on TM Story's response body must never reach the browser.
+    it('never forwards a field on TM Story\'s report that its own adapter does not explicitly name, even one shaped like a leaked private note', async () => {
+      globalThis.fetch = async () => ({
+        ok: true,
+        json: async () => ({
+          downtimes: [{
+            cycle_id: 'cyc-1',
+            narrative: 'The public narrative.',
+            _internal_st_note: 'SHOULD-NEVER-LEAK: another player\'s private ST note',
+            owner_email: 'SHOULD-NEVER-LEAK@example.com',
+            raw_mongo_doc: { anything: 'SHOULD-NEVER-LEAK' },
+          }],
+        }),
+      });
+      const res = await request(app)
+        .get('/api/downtime_submissions/story-tab?character_id=charA')
+        .set('X-Test-User', playerUser(['charA']))
+        .set('Authorization', 'Bearer tok');
+      expect(res.status).toBe(200);
+      const wire = JSON.stringify(res.body);
+      expect(wire).not.toMatch(/SHOULD-NEVER-LEAK/);
+      expect(res.body.downtimes[0]).not.toHaveProperty('_internal_st_note');
+      expect(res.body.downtimes[0]).not.toHaveProperty('owner_email');
+      expect(res.body.downtimes[0]).not.toHaveProperty('raw_mongo_doc');
+    });
+  });
 });

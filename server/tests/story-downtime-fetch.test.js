@@ -135,6 +135,24 @@ describe('adaptStoryReport', () => {
     expect(sub.st_narrative.cacophony_savvy).toEqual([]);
     expect(sub.published_outcome).toBe('');
   });
+
+  // Story storytab.3, AC 4: this adapter is the ONLY thing standing between TM Story's raw
+  // response body and the browser — it must be a strict allowlist (named fields copied out
+  // one at a time), never a spread/passthrough of whatever TM Story happened to send. An
+  // unexpected field (e.g. a bug on TM Story's own side leaking another player's data into
+  // this report) must not survive the adapter.
+  it('drops any field on the report that is not one of its own explicitly-named fields', () => {
+    const sub = adaptStoryReport({
+      ...RICH_REPORT,
+      _internal_st_note: 'another player\'s private note',
+      owner_email: 'someone@example.com',
+      raw_mongo_doc: { secret: true },
+    }, 'charA', 0);
+    expect(sub).not.toHaveProperty('_internal_st_note');
+    expect(sub).not.toHaveProperty('owner_email');
+    expect(sub).not.toHaveProperty('raw_mongo_doc');
+    expect(JSON.stringify(sub)).not.toMatch(/private note|example\.com|secret/);
+  });
 });
 
 describe('syntheticChapterFor', () => {

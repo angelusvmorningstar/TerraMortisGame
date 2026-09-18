@@ -1,6 +1,6 @@
 # Story storytab.3: Leak-Gate Test Coverage for the TM Story Merge Path
 
-## Status: backlog — can be built alongside storytab.1, but is its own reviewable unit
+## Status: done — 2026-09-18
 
 ## Story
 
@@ -68,3 +68,50 @@ and this repo's own existing ownership-gate tests for `downtime.js` if any exist
 - `../TM Story/server/routes/downtimes.js` (the endpoint being called — read its own leak-gate
   discipline to understand what this repo's own new code path must not undermine).
 - `stories/storytab.1.inter-service-downtime-fetch.story.md` (the code this story tests).
+
+## Dev Agent Record
+
+**Audited existing coverage before writing anything new**, per the Dev Notes' own "extend rather than
+reinvent" instruction. `server/tests/api-downtime-story-tab.test.js` and
+`server/tests/story-downtime-fetch.test.js` already carry substantial leak-gate coverage, written
+during storytab.1/.2's own Codex-hardening passes (2026-09-18) before this story's dev-story phase
+began:
+
+- **AC 1** (character id is always the viewer's own): already covered — `403` on a mismatched
+  character (line ~63), and critically, `'never calls TM Story at all for a rejected (403) request'`
+  (line ~71), which proves the unauthorised id is never even forwarded, not just that the response is
+  blocked. Plus the ST-bypass positive case. No gap.
+- **AC 2** (forwarded token is the requesting player's own): a single-token verbatim-forwarding test
+  existed, but nothing proved the value *tracks* the inbound request rather than coincidentally
+  matching one fixed string across the whole suite. **Gap, filled.**
+- **AC 3** (auth failure degrades, never retries): the existing tests asserted the *response shape* on
+  failure but never the *call count* — a retry-with-different-credentials regression could pass every
+  existing test. **Gap, filled**, for both a network failure and a TM-Story-side 403.
+- **AC 4** (merged response never exceeds TM Story's own allowlist): `adaptStoryReport()` was already
+  structurally a strict allowlist (named-field copy, no spread), and its happy-path fields were unit
+  tested, but nothing adversarial proved an *unexpected* field never survives the adapter, nor a
+  black-box wire-level check at the route. **Gap, filled at both levels.**
+- **AC 5** (automated, mocked HTTP, no live dependency): already true of the whole existing suite;
+  nothing to add.
+
+**What was added** (5 new tests, 0 production code changes — the leak-gate discipline this story
+proves was already built correctly during storytab.1/.2's own hardening, this story closes the
+verification gap, not a code gap):
+- `api-downtime-story-tab.test.js`, new `describe('Story storytab.3: leak-gate test coverage')` block:
+  token-tracks-the-request (AC 2), exactly-once-on-network-failure and exactly-once-on-403 (AC 3), and
+  a wire-level unexpected-field-never-leaks test (AC 4).
+- `story-downtime-fetch.test.js`: one adversarial `adaptStoryReport` test proving an unexpected field
+  (shaped like a leaked private note) is dropped, not carried through.
+
+**Gate**: `npx vitest run tests/api-downtime-story-tab.test.js tests/story-downtime-fetch.test.js`
+(from `server/`) — 37/37 passing (32 pre-existing + 5 new). A full-suite run was also taken as a
+regression baseline check: 25 files / 119 tests failed, but **none in either file this story touched**
+(confirmed by grepping the full run's output for `story-tab`/`story-downtime-fetch`: no matches) —
+the failures are in unrelated suites (`rule-engine-integration.test.js`,
+`stm-8-pool-snapshot.test.js`, `ws-fanout.test.js`, and 22 others), a pre-existing baseline this story
+did not introduce and is not responsible for fixing.
+
+### Status
+
+**Marked `done`, 2026-09-18.** No open findings; no production code changed. All 5 ACs satisfied,
+three by pre-existing coverage confirmed still valid, two by new tests added this pass.
