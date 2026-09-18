@@ -121,6 +121,26 @@ describe('GET /api/downtime_submissions/story-tab', () => {
       .toBeGreaterThan(chapterMap[res.body.downtimes[1].chapter_id].game_number);
   });
 
+  // Found live, story storytab.5, 2026-09-19: a real player's STORY tab showed "Cycle 95:1"
+  // for a genuinely published entry, because the synthetic chapter's label was always unset and
+  // a display-side fallback sliced the synthetic id itself. Fixed by threading TM Story's own
+  // report.published_at (added the same day) through into the chapter's label.
+  it('threads the TM Story report\'s own published_at through into the synthetic chapter\'s label, a real month/year instead of a garbled id fragment', async () => {
+    globalThis.fetch = async () => ({
+      ok: true,
+      json: async () => ({
+        downtimes: [{ cycle_id: 'cyc-dated', narrative: 'A dated cycle.', published_at: '2026-09-18T09:47:48.625Z' }],
+      }),
+    });
+    const res = await request(app)
+      .get('/api/downtime_submissions/story-tab?character_id=charA')
+      .set('X-Test-User', playerUser(['charA']))
+      .set('Authorization', 'Bearer tok');
+    expect(res.status).toBe(200);
+    expect(res.body.chapters).toHaveLength(1);
+    expect(res.body.chapters[0].label).toBe('Sept 2026');
+  });
+
   it('an ST may request any character\'s story-tab data (bypasses the ownership check on THIS side)', async () => {
     globalThis.fetch = async () => ({ ok: true, json: async () => ({ downtimes: [] }) });
     const res = await request(app)
