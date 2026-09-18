@@ -594,7 +594,7 @@ function goTab(t, ctx) {
     const char = _activeMoreChar();
     if (miscEl && char && !miscEl.innerHTML.trim()) renderPastOutcomes(miscEl, char);
     // 2026-08-29: this is NOT the only surface a published downtime outcome is
-    // visible on — the "STORY" nav's Downtime Reports list (initArchiveTab,
+    // visible on; the "STORY" nav's Downtime Reports list (initArchiveTab,
     // archive-tab.js) shows the same data. Corrected Story storytab.5, 2026-09-19:
     // the original claim here was already false before that story (archive-tab.js
     // already showed it) and was found stale during that story's own chorus review.

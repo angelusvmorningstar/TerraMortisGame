@@ -1,0 +1,517 @@
+diff --git a/public/js/app.js b/public/js/app.js
+index 2643bf19..02eb8923 100644
+--- a/public/js/app.js
++++ b/public/js/app.js
+@@ -593,11 +593,15 @@ function goTab(t, ctx) {
+     const miscEl = document.getElementById('misc-past-outcomes');
+     const char = _activeMoreChar();
+     if (miscEl && char && !miscEl.innerHTML.trim()) renderPastOutcomes(miscEl, char);
+-    // 2026-08-29: this is now the ONLY surface a published downtime outcome is
+-    // visible on (the Downtime tab itself is gone). _markSubViewed used to fire
+-    // from that tab's own dispatch; moved here so the #more-badge "unread
+-    // narrative" indicator can still be cleared by a player actually reading it,
+-    // rather than being permanently stuck on.
++    // 2026-08-29: this is NOT the only surface a published downtime outcome is
++    // visible on — the "STORY" nav's Downtime Reports list (initArchiveTab,
++    // archive-tab.js) shows the same data. Corrected Story storytab.5, 2026-09-19:
++    // the original claim here was already false before that story (archive-tab.js
++    // already showed it) and was found stale during that story's own chorus review.
++    // _markSubViewed used to fire from the old Downtime tab's own dispatch; moved
++    // here so the #more-badge "unread narrative" indicator can still be cleared by
++    // a player actually reading it on this surface, rather than being permanently
++    // stuck on.
+     _markSubViewed();
+   }
+   // 'downtime' and 'ordeals' tab-body dispatch removed 2026-08-29 (Angelus):
+diff --git a/public/js/tabs/archive-tab.js b/public/js/tabs/archive-tab.js
+index c1d2e1d0..018193d7 100644
+--- a/public/js/tabs/archive-tab.js
++++ b/public/js/tabs/archive-tab.js
+@@ -35,7 +35,7 @@ import { esc, displayName, clanIcon, covIcon } from '../data/helpers.js';
+ import { renderSheet } from '../editor/sheet.js';
+ import { renderReadOnlyField } from '../editor/questionnaire-render.js';
+ import { QUESTIONNAIRE_SECTIONS } from './questionnaire-data.js';
+-import { renderOutcomeWithCards } from './story-tab.js';
++import { renderOutcomeWithCards, fetchAndMergeStoryTabDowntimes, sortDowntimesByChapterRecency } from './story-tab.js';
+ 
+ let _el          = null;
+ let _char        = null;
+@@ -50,9 +50,12 @@ export async function initArchiveTab(el, char, retiredChars) {
+ 
+ // ── List view ─────────────────────────────────────────────────────────────────
+ 
+-async function renderArchiveList() {
+-  _el.innerHTML = '<p class="placeholder-msg">Loading…</p>';
+-
++// Story storytab.5, AC 2/AC 9: the fetch+merge+sort data logic, extracted into one
++// DOM-free async function so it can be unit-tested directly (this repo's `vitest.config.js`
++// has no jsdom environment — see that story's Story-Prep Question 2, closed) rather than
++// only provable via a live-browser check. `renderArchiveList` below is left doing only DOM
++// work: build the HTML, wire the click handlers.
++export async function loadArchiveDowntimeData(char) {
+   let subs = [], cycles = [];
+   try {
+     [subs, cycles] = await Promise.all([
+@@ -66,20 +69,21 @@ async function renderArchiveList() {
+     });
+   } catch { /* non-fatal */ }
+ 
++  [subs, cycles] = await fetchAndMergeStoryTabDowntimes(char, subs, cycles);
++
+   const cycleMap = {};
+-  const cycleOrderMap = {};
+-  for (const c of cycles) {
+-    cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
+-    cycleOrderMap[String(c._id)] = c.game_number ?? c.cycle_number ?? c.created_at ?? c._id;
+-  }
+-  const charId = String(_char._id);
+-  const downtimeSubs = subs
+-    .filter(s => String(s.character_id) === charId && s.published_outcome)
+-    .sort((a, b) => {
+-      const ka = cycleOrderMap[String(a.chapter_id)] || '';
+-      const kb = cycleOrderMap[String(b.chapter_id)] || '';
+-      return String(kb).localeCompare(String(ka));
+-    });
++  for (const c of cycles) cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
++  const charId = String(char._id);
++  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
++  const downtimeSubs = sortDowntimesByChapterRecency(filtered, cycles);
++
++  return { downtimeSubs, cycleMap };
++}
++
++async function renderArchiveList() {
++  _el.innerHTML = '<p class="placeholder-msg">Loading…</p>';
++
++  const { downtimeSubs, cycleMap } = await loadArchiveDowntimeData(_char);
+ 
+   let h = '';
+ 
+diff --git a/public/js/tabs/downtime-tab.js b/public/js/tabs/downtime-tab.js
+index ad688490..40df6f25 100644
+--- a/public/js/tabs/downtime-tab.js
++++ b/public/js/tabs/downtime-tab.js
+@@ -3,7 +3,7 @@
+ import { apiGet } from '../data/api.js';
+ import { esc } from '../data/helpers.js';
+ import { renderDowntimeTab } from './downtime-form.js';
+-import { renderOutcomeWithCards } from './story-tab.js';
++import { renderOutcomeWithCards, fetchAndMergeStoryTabDowntimes, sortDowntimesByChapterRecency } from './story-tab.js';
+ import { isSTRole, getUser } from '../auth/discord.js';
+ import { FORM_RETIRED, RETIRED_NOTICE } from '../downtime/form-retirement.js';
+ 
+@@ -149,12 +149,12 @@ export async function initDowntimeTab(el, char, territories = []) {
+   el.appendChild(currentZone);
+ }
+ 
+-/** Render past outcomes accordion into a target element. Standalone — can be
+- *  called independently of the downtime form tab. */
+-export async function renderPastOutcomes(el, char) {
+-  if (!el || !char) return;
+-  el.innerHTML = '';
+-
++// Story storytab.5, AC 3/AC 9: the fetch+merge+sort data logic, extracted into one
++// DOM-free async function so it can be unit-tested directly (this repo's `vitest.config.js`
++// has no jsdom environment — see that story's Story-Prep Question 2, closed) rather than
++// only provable via a live-browser check. `renderPastOutcomes` below is left doing only
++// DOM work: build the accordion HTML, wire the raw-toggle handlers.
++export async function loadPastOutcomesData(char) {
+   let cycles = [], subs = [];
+   try {
+     [cycles, subs] = await Promise.all([
+@@ -166,18 +166,31 @@ export async function renderPastOutcomes(el, char) {
+         s.published_outcome = s.st_review.outcome_text;
+       }
+     });
+-  } catch { return; }
++  } catch {
++    return { publishedSubs: [], cycles: [] };
++  }
++
++  [subs, cycles] = await fetchAndMergeStoryTabDowntimes(char, subs, cycles);
+ 
+   const charId = String(char._id);
+-  const cycleMap = {};
+-  for (const c of cycles) cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
++  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
++  const publishedSubs = sortDowntimesByChapterRecency(filtered, cycles);
+ 
+-  const publishedSubs = subs
+-    .filter(s => String(s.character_id) === charId && s.published_outcome)
+-    .sort((a, b) => (String(b._id) > String(a._id) ? 1 : -1));
++  return { publishedSubs, cycles };
++}
++
++/** Render past outcomes accordion into a target element. Standalone — can be
++ *  called independently of the downtime form tab. */
++export async function renderPastOutcomes(el, char) {
++  if (!el || !char) return;
++  el.innerHTML = '';
+ 
++  const { publishedSubs, cycles } = await loadPastOutcomesData(char);
+   if (!publishedSubs.length) return;
+ 
++  const cycleMap = {};
++  for (const c of cycles) cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
++
+   let h = '<h3 class="dt-history-heading">Past Outcomes</h3>';
+   for (const sub of publishedSubs) {
+     const label = cycleMap[String(sub.chapter_id)] || 'Unknown Cycle';
+diff --git a/public/js/tabs/story-tab.js b/public/js/tabs/story-tab.js
+index cdad2c3a..dce93320 100644
+--- a/public/js/tabs/story-tab.js
++++ b/public/js/tabs/story-tab.js
+@@ -36,7 +36,10 @@ const ACTION_TYPE_LABELS = {
+ // repo's own sub shape and mints a matching synthetic chapter, so the EXISTING
+ // game_number-descending sort below needs no change to place them correctly (AC 6's
+ // ruled provisional block rule \u2014 see server/lib/story-downtime-fetch.js's own header).
+-async function fetchAndMergeStoryTabDowntimes(char, subs, cycles) {
++// Story storytab.5, AC 1: exported so archive-tab.js and downtime-tab.js (the two live
++// surfaces a player/ST actually reaches, see that story's own Background) can call it
++// too \u2014 this file's own two callers below are no longer the only ones.
++export async function fetchAndMergeStoryTabDowntimes(char, subs, cycles) {
+   try {
+     const { downtimes, chapters } = await apiGet(`/api/downtime_submissions/story-tab?character_id=${char._id}`);
+     return [[...subs, ...downtimes], [...cycles, ...chapters]];
+@@ -45,6 +48,29 @@ async function fetchAndMergeStoryTabDowntimes(char, subs, cycles) {
+   }
+ }
+ 
++// Story storytab.5, AC 4 (RULED, Angelus, 2026-09-19 \u2014 Dana's Option 2): the ONE shared
++// sort every surface that lists a character's downtime chronologically must use, wrapping
++// this file's own pre-existing numeric game_number-descending compare (already correct,
++// already proven by storytab.1's own AC 6 tests). Replaces three independently-coded
++// comparators that had silently drifted apart: archive-tab.js's own string
++// `localeCompare`, and downtime-tab.js's own raw `_id`-string compare \u2014 both broken by the
++// exact same cause, a comparator never designed against a TM-Story-sourced entry's
++// synthetic game_number (server/lib/story-downtime-fetch.js's syntheticChapterFor assigns
++// a value far above any real game_number specifically so THIS numeric compare keeps AC 6's
++// block rule intact; a string compare on that same value does not, see this story's own
++// AC 4 for the reproduced bug). Takes the raw `cycles` array, not a pre-built map, so every
++// call site can hand it whatever it already fetched without reshaping first. Non-mutating \u2014
++// returns a new array, never sorts `subs` in place.
++export function sortDowntimesByChapterRecency(subs, cycles) {
++  const cycleMap = {};
++  for (const c of cycles) cycleMap[String(c._id)] = c;
++  return [...subs].sort((a, b) => {
++    const ga = cycleMap[String(a.chapter_id)]?.game_number ?? 0;
++    const gb = cycleMap[String(b.chapter_id)]?.game_number ?? 0;
++    return gb - ga;
++  });
++}
++
+ /**
+  * Fetches and renders only the most recent published DT report for a character.
+  * Used by the game app (index.html) Downtime tab.
+@@ -72,13 +98,8 @@ export async function renderLatestReport(el, char) {
+   for (const c of cycles) cycleMap[String(c._id)] = c;
+ 
+   const charId = String(char._id);
+-  const published = subs
+-    .filter(s => String(s.character_id) === charId && s.published_outcome)
+-    .sort((a, b) => {
+-      const ga = cycleMap[String(a.chapter_id)]?.game_number ?? 0;
+-      const gb = cycleMap[String(b.chapter_id)]?.game_number ?? 0;
+-      return gb - ga;
+-    });
++  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
++  const published = sortDowntimesByChapterRecency(filtered, cycles);
+ 
+   if (!published.length) {
+     el.innerHTML = '<p class="placeholder-msg">No published downtime narratives yet.</p>';
+@@ -208,13 +229,8 @@ export function renderChronicle(subs, cycles, char) {
+   }
+ 
+   const charId = String(char._id);
+-  const published = subs
+-    .filter(s => String(s.character_id) === charId && s.published_outcome)
+-    .sort((a, b) => {
+-      const ga = cycleMap[String(a.chapter_id)]?.game_number ?? 0;
+-      const gb = cycleMap[String(b.chapter_id)]?.game_number ?? 0;
+-      return gb - ga;
+-    });
++  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
++  const published = sortDowntimesByChapterRecency(filtered, cycles);
+ 
+   if (!published.length) {
+     return '<p class="placeholder-msg story-placeholder">No published downtime narratives yet.</p>';
+diff --git a/server/tests/storytab4-readonly-guard.test.js b/server/tests/storytab4-readonly-guard.test.js
+index f572bcd0..f9105ce5 100644
+--- a/server/tests/storytab4-readonly-guard.test.js
++++ b/server/tests/storytab4-readonly-guard.test.js
+@@ -218,4 +218,31 @@ describe('storytab4-readonly-guard: AC 4, client-side no-local-persistence scan'
+     );
+     expect(scan(callers, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
+   });
++
++  // Story storytab.5, AC 8: this guard's own Codex Pass 3a found and fixed exactly this
++  // class of gap once already (the AC 4 scan stopped at the merge function's own boundary
++  // until extended to follow data into its actual callers). storytab.5 adds TWO further
++  // callers of fetchAndMergeStoryTabDowntimes — archive-tab.js's loadArchiveDowntimeData and
++  // downtime-tab.js's loadPastOutcomesData — checked here rather than assumed covered.
++  it('loadArchiveDowntimeData (archive-tab.js, storytab.5\'s first new caller) introduces no downstream persistence of the TM-Story-sourced merge', () => {
++    const source = read('public/js/tabs/archive-tab.js');
++    const fn = extractBetween(
++      source,
++      'export async function loadArchiveDowntimeData(char) {',
++      'async function renderArchiveList() {',
++    );
++    expect(scan(fn, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
++    expect(fn).toMatch(/apiGet\(/);
++  });
++
++  it('loadPastOutcomesData (downtime-tab.js, storytab.5\'s second new caller) introduces no downstream persistence of the TM-Story-sourced merge', () => {
++    const source = read('public/js/tabs/downtime-tab.js');
++    const fn = extractBetween(
++      source,
++      'export async function loadPastOutcomesData(char) {',
++      'export async function renderPastOutcomes(el, char) {',
++    );
++    expect(scan(fn, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
++    expect(fn).toMatch(/apiGet\(/);
++  });
+ });
+diff --git a/server/tests/storytab5-cross-app-wiring.test.js b/server/tests/storytab5-cross-app-wiring.test.js
+new file mode 100644
+index 00000000..4b6199fe
+--- /dev/null
++++ b/server/tests/storytab5-cross-app-wiring.test.js
+@@ -0,0 +1,238 @@
++/**
++ * Story storytab.5 — wires BOTH live downtime-reading surfaces (archive-tab.js's "STORY"
++ * nav and downtime-tab.js's Info tab "Past Outcomes" accordion) to the cross-app merge
++ * storytab.1 built, plus AC 4's shared sort fix. No jsdom in this repo's `vitest.config.js`
++ * (Story-Prep Question 2, closed) — so this suite proves the DOM-free data layer
++ * (`loadArchiveDowntimeData`, `loadPastOutcomesData`, `sortDowntimesByChapterRecency`)
++ * against the REAL production functions, mirroring `story-tab-cross-app-render.test.js`'s
++ * own precedent. AC 5's mandatory live-browser check is what proves the actual DOM wiring;
++ * this suite does not attempt to substitute for it.
++ */
++
++// Browser shims — sheet.js (imported transitively via archive-tab.js) and story-tab.js's
++// own auth/discord.js read pull api.js's `location` reference and localStorage. Same
++// pattern as collective-2-compound-generalisation.test.js / oath-b-suspension.test.js.
++// api.js itself is mocked below, so its real top-level code never runs, but the shims stay
++// as a defensive precaution matching this repo's own established convention for importing
++// anything that touches editor/sheet.js under plain Node.
++globalThis.location = {
++  origin: 'http://localhost:8080',
++  hostname: 'localhost',
++  href: 'http://localhost:8080/admin',
++};
++globalThis.localStorage = {
++  _store: {},
++  getItem(k) { return this._store[k] ?? null; },
++  setItem(k, v) { this._store[k] = String(v); },
++  removeItem(k) { delete this._store[k]; },
++};
++
++import { describe, it, expect, vi, beforeEach } from 'vitest';
++
++const api = vi.hoisted(() => ({ impl: null, calls: [] }));
++vi.mock('../../public/js/data/api.js', () => ({
++  apiGet: async (...args) => { api.calls.push(args[0]); return api.impl(...args); },
++  apiPost: async () => ({}),
++  apiPut: async () => ({}),
++  apiPatch: async () => ({}),
++  apiDelete: async () => ({}),
++  apiBase: () => '',
++  headers: () => ({}),
++}));
++
++import { sortDowntimesByChapterRecency } from '../../public/js/tabs/story-tab.js';
++import { loadArchiveDowntimeData } from '../../public/js/tabs/archive-tab.js';
++import { loadPastOutcomesData } from '../../public/js/tabs/downtime-tab.js';
++import { adaptStoryReport, syntheticChapterFor } from '../lib/story-downtime-fetch.js';
++
++beforeEach(() => { api.calls = []; });
++
++// ── AC 4: the shared sort helper, reproducing Dana's exact chorus-review finding ──────
++
++describe('storytab.5 AC 4: sortDowntimesByChapterRecency', () => {
++  it('places a TM-Story-sourced entry (synthetic game_number ~1e9) ahead of a real Game 8 entry — the bug archive-tab.js\'s old string localeCompare got wrong', () => {
++    const REAL_GAME_8 = { _id: 'game-sub-8', character_id: 'charA', chapter_id: 'chapterH', published_outcome: 'Game 8 outcome.' };
++    const REAL_CHAPTER_8 = { _id: 'chapterH', game_number: 8, label: 'Game 8' };
++
++    const storyReport = { cycle_id: 'cyc-newest', narrative: 'Game 9 (TM Story) outcome.' };
++    const adaptedSub = adaptStoryReport(storyReport, 'charA', 0);
++    const syntheticChapter = syntheticChapterFor('charA', 0);
++
++    // Deliberately insert the tm_game entry FIRST — the sort, not insertion order, must decide.
++    const subs = [REAL_GAME_8, adaptedSub];
++    const cycles = [REAL_CHAPTER_8, syntheticChapter];
++
++    const sorted = sortDowntimesByChapterRecency(subs, cycles);
++    expect(sorted[0]).toBe(adaptedSub);
++    expect(sorted[1]).toBe(REAL_GAME_8);
++  });
++
++  it('is a numeric compare, not the string localeCompare that put "1000000000" behind "8"', () => {
++    // Direct reproduction of the exact comparison Dana ran in Node: confirms the fix at the
++    // narrowest possible grain, independent of the fuller end-to-end test above.
++    expect('1000000000'.localeCompare('8')).toBeLessThan(0); // the OLD bug's own mechanism
++    const a = { chapter_id: 'synthetic' };
++    const b = { chapter_id: 'real' };
++    const cycles = [{ _id: 'synthetic', game_number: 1_000_000_000 }, { _id: 'real', game_number: 8 }];
++    const sorted = sortDowntimesByChapterRecency([b, a], cycles);
++    expect(sorted[0]).toBe(a); // synthetic (1e9) correctly sorts first under the numeric fix
++  });
++
++  it('does not mutate its input array', () => {
++    const subs = [
++      { chapter_id: 'a' },
++      { chapter_id: 'b' },
++    ];
++    const cycles = [{ _id: 'a', game_number: 1 }, { _id: 'b', game_number: 2 }];
++    const original = [...subs];
++    sortDowntimesByChapterRecency(subs, cycles);
++    expect(subs).toEqual(original);
++  });
++
++  it('preserves each source\'s own internal order (TM-Story newest-first, tm_game game_number-descending)', () => {
++    const storyReports = [
++      { cycle_id: 'cyc-newer', narrative: 'TM Story newer.' },
++      { cycle_id: 'cyc-older', narrative: 'TM Story older.' },
++    ];
++    const adapted = storyReports.map((r, i) => adaptStoryReport(r, 'charA', i));
++    const synthetic = storyReports.map((_, i) => syntheticChapterFor('charA', i));
++    const gameSubs = [
++      { _id: 'g7', character_id: 'charA', chapter_id: 'chB', published_outcome: 'Game 7.' },
++      { _id: 'g1', character_id: 'charA', chapter_id: 'chA', published_outcome: 'Game 1.' },
++    ];
++    const gameCycles = [{ _id: 'chA', game_number: 1 }, { _id: 'chB', game_number: 7 }];
++
++    const sorted = sortDowntimesByChapterRecency(
++      [gameSubs[1], adapted[1], gameSubs[0], adapted[0]],
++      [...gameCycles, ...synthetic],
++    );
++    expect(sorted.map(s => s._id)).toEqual([adapted[0]._id, adapted[1]._id, 'g7', 'g1']);
++  });
++});
++
++// ── AC 2 / AC 6 / AC 9: archive-tab.js's loadArchiveDowntimeData ──────────────────────
++
++describe('storytab.5 AC 2/AC 9: archive-tab.js wires the cross-app merge via loadArchiveDowntimeData', () => {
++  const CHAR = { _id: 'charA' };
++
++  it('merges a TM-Story-sourced entry into the archive list, correctly ordered ahead of tm_game entries', async () => {
++    api.impl = async (url) => {
++      if (url === '/api/downtime_submissions') {
++        return [{ _id: 'g8', character_id: 'charA', chapter_id: 'chapterH', published_outcome: 'Game 8 outcome.' }];
++      }
++      if (url === '/api/chapters') {
++        return [{ _id: 'chapterH', game_number: 8, label: 'Game 8' }];
++      }
++      if (url.startsWith('/api/downtime_submissions/story-tab')) {
++        return {
++          downtimes: [adaptStoryReport({ cycle_id: 'cyc9', narrative: 'Game 9 (TM Story).' }, 'charA', 0)],
++          chapters: [syntheticChapterFor('charA', 0)],
++        };
++      }
++      throw new Error(`unexpected apiGet: ${url}`);
++    };
++
++    const { downtimeSubs, cycleMap } = await loadArchiveDowntimeData(CHAR);
++    expect(downtimeSubs).toHaveLength(2);
++    expect(downtimeSubs[0].published_outcome).toBe('Game 9 (TM Story).');
++    expect(downtimeSubs[1].published_outcome).toBe('Game 8 outcome.');
++    expect(cycleMap[String(downtimeSubs[1].chapter_id)]).toBe('Game 8');
++    // The story-tab-story route was actually called — proves the merge is wired, not just
++    // that this call would have been safe to make.
++    expect(api.calls.some(u => u.startsWith('/api/downtime_submissions/story-tab'))).toBe(true);
++  });
++
++  it('degrades to tm_game-only data, still correctly sorted, when the TM Story fetch fails — never blanks the list (AC 6)', async () => {
++    api.impl = async (url) => {
++      if (url === '/api/downtime_submissions') {
++        return [
++          { _id: 'g8', character_id: 'charA', chapter_id: 'chapterH', published_outcome: 'Game 8 outcome.' },
++          { _id: 'g1', character_id: 'charA', chapter_id: 'chapterA', published_outcome: 'Game 1 outcome.' },
++        ];
++      }
++      if (url === '/api/chapters') {
++        return [
++          { _id: 'chapterH', game_number: 8, label: 'Game 8' },
++          { _id: 'chapterA', game_number: 1, label: 'Game 1' },
++        ];
++      }
++      if (url.startsWith('/api/downtime_submissions/story-tab')) throw new Error('TM Story is down');
++      throw new Error(`unexpected apiGet: ${url}`);
++    };
++
++    const { downtimeSubs } = await loadArchiveDowntimeData(CHAR);
++    expect(downtimeSubs.map(s => s._id)).toEqual(['g8', 'g1']);
++  });
++
++  it('promotes st_review.outcome_text to published_outcome exactly as the original inline logic did', async () => {
++    api.impl = async (url) => {
++      if (url === '/api/downtime_submissions') {
++        return [{ _id: 'g8', character_id: 'charA', chapter_id: 'chapterH', st_review: { outcome_visibility: 'published', outcome_text: 'Promoted text.' } }];
++      }
++      if (url === '/api/chapters') return [{ _id: 'chapterH', game_number: 8, label: 'Game 8' }];
++      if (url.startsWith('/api/downtime_submissions/story-tab')) return { downtimes: [], chapters: [] };
++      throw new Error(`unexpected apiGet: ${url}`);
++    };
++
++    const { downtimeSubs } = await loadArchiveDowntimeData(CHAR);
++    expect(downtimeSubs).toHaveLength(1);
++    expect(downtimeSubs[0].published_outcome).toBe('Promoted text.');
++  });
++});
++
++// ── AC 3 / AC 6 / AC 9: downtime-tab.js's loadPastOutcomesData ────────────────────────
++
++describe('storytab.5 AC 3/AC 9: downtime-tab.js wires the cross-app merge via loadPastOutcomesData', () => {
++  const CHAR = { _id: 'charA' };
++
++  it('merges a TM-Story-sourced entry into Past Outcomes, correctly ordered ahead of tm_game entries — replacing the old raw _id-string sort', async () => {
++    api.impl = async (url) => {
++      if (url === '/api/chapters') return [{ _id: 'chapterH', game_number: 8, label: 'Game 8' }];
++      if (url === '/api/downtime_submissions') {
++        return [{ _id: 'g8', character_id: 'charA', chapter_id: 'chapterH', published_outcome: 'Game 8 outcome.' }];
++      }
++      if (url.startsWith('/api/downtime_submissions/story-tab')) {
++        return {
++          downtimes: [adaptStoryReport({ cycle_id: 'cyc9', narrative: 'Game 9 (TM Story).' }, 'charA', 0)],
++          chapters: [syntheticChapterFor('charA', 0)],
++        };
++      }
++      throw new Error(`unexpected apiGet: ${url}`);
++    };
++
++    const { publishedSubs } = await loadPastOutcomesData(CHAR);
++    expect(publishedSubs).toHaveLength(2);
++    expect(publishedSubs[0].published_outcome).toBe('Game 9 (TM Story).');
++    expect(publishedSubs[1].published_outcome).toBe('Game 8 outcome.');
++    expect(api.calls.some(u => u.startsWith('/api/downtime_submissions/story-tab'))).toBe(true);
++  });
++
++  it('degrades to tm_game-only data, still correctly sorted, when the TM Story fetch fails — never blanks the accordion (AC 6)', async () => {
++    api.impl = async (url) => {
++      if (url === '/api/chapters') {
++        return [
++          { _id: 'chapterH', game_number: 8, label: 'Game 8' },
++          { _id: 'chapterA', game_number: 1, label: 'Game 1' },
++        ];
++      }
++      if (url === '/api/downtime_submissions') {
++        return [
++          { _id: 'g8', character_id: 'charA', chapter_id: 'chapterH', published_outcome: 'Game 8 outcome.' },
++          { _id: 'g1', character_id: 'charA', chapter_id: 'chapterA', published_outcome: 'Game 1 outcome.' },
++        ];
++      }
++      if (url.startsWith('/api/downtime_submissions/story-tab')) throw new Error('TM Story is down');
++      throw new Error(`unexpected apiGet: ${url}`);
++    };
++
++    const { publishedSubs } = await loadPastOutcomesData(CHAR);
++    expect(publishedSubs.map(s => s._id)).toEqual(['g8', 'g1']);
++  });
++
++  it('returns an empty result (not a throw) when the initial tm_game fetch itself fails, matching the original early-return behaviour', async () => {
++    api.impl = async () => { throw new Error('tm_game is down'); };
++    const { publishedSubs, cycles } = await loadPastOutcomesData(CHAR);
++    expect(publishedSubs).toEqual([]);
++    expect(cycles).toEqual([]);
++  });
++});

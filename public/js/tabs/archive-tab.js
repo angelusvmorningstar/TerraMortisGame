@@ -52,7 +52,7 @@ export async function initArchiveTab(el, char, retiredChars) {
 
 // Story storytab.5, AC 2/AC 9: the fetch+merge+sort data logic, extracted into one
 // DOM-free async function so it can be unit-tested directly (this repo's `vitest.config.js`
-// has no jsdom environment — see that story's Story-Prep Question 2, closed) rather than
+// has no jsdom environment, see that story's Story-Prep Question 2, closed) rather than
 // only provable via a live-browser check. `renderArchiveList` below is left doing only DOM
 // work: build the HTML, wire the click handlers.
 export async function loadArchiveDowntimeData(char) {

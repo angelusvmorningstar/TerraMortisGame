@@ -2173,3 +2173,52 @@ original Allies→Sway character-data rename (a `$set` on `merits.$.name` for al
 characters, matched by array-filter on `name: "Mystery Cult Initiation"`), re-verify the count
 against live data first (this entry is dated 2026-09-18), and check whether `rule_key`/`cult_name`
 or anything else needs to move alongside it before running it.
+
+## Deferred from: storytab.5 external Codex review, 2026-09-19
+
+External Codex review (3-layer, high reasoning effort) of storytab.5 found four items worth a real
+future fix but none blocking that story's own `review` status (full findings:
+`specs/stories/code-review/storytab.5-codex-findings.md`).
+
+**1. `loadArchiveDowntimeData` and `loadPastOutcomesData` handle an initial-fetch failure
+differently** (Medium, Pass 1). `archive-tab.js`'s version tolerates either individual `apiGet`
+call failing (`.catch(() => [])` per call) and still attempts the cross-app merge on whatever
+survives; `downtime-tab.js`'s version has no per-call catch, so either call rejecting fails the
+whole function and returns empty immediately. **Verified pre-existing, not introduced by
+storytab.5**: this exact asymmetry was already present, byte-for-byte, in each file's own original
+inline code before that story only extracted it into named functions. Worth fixing now specifically
+because storytab.5 gave both functions the same name pattern and the same claimed job, making the
+inconsistency more conspicuous and more likely to surprise a future reader than it was when the two
+were unrelated inline blocks in different files.
+
+**2. No timeout around the TM-Story cross-app fetch, on any of its four call sites** (Medium, Pass
+2). `fetchAndMergeStoryTabDowntimes`'s own outbound request (`server/lib/story-downtime-fetch.js`'s
+`fetchStoryDowntimes`) has no `AbortSignal`/deadline, and neither does `public/js/data/api.js`'s
+`apiGet` wrapper. A TM Story request that hangs rather than rejecting leaves the caller waiting
+indefinitely. **Verified pre-existing**: storytab.1's own two callers (`renderLatestReport`,
+`renderStoryTab`) already had this exposure; storytab.5 doubles the blast radius by adding
+`archive-tab.js`'s and `downtime-tab.js`'s render paths as two more callers with no timeout of
+their own either.
+
+**3. No automated test exercises the real render functions (`renderArchiveList`,
+`renderPastOutcomes`) or does a before/after content comparison for AC 6/AC 7's literal wording**
+(Medium, Pass 3a). storytab.5's own AC 9 deliberately extracted the fetch/merge/sort logic into
+DOM-free functions specifically because this repo's `vitest.config.js` has no jsdom, and AC 9's own
+text names AC 5's live-browser check as the accepted substitute for proving the DOM wiring itself.
+Real tension between AC 6/7's literal wording (which asks for tests against the render functions by
+name) and AC 9's own accepted trade-off (which explicitly rules that gap acceptable, covered by AC 5
+instead) — not resolved here, named for whoever next touches this to be aware AC 5's own live check
+is doing double duty for both AC 5 and this gap.
+
+**4. Orphan/legacy-chapter sort ordering has no regression test** (Low, Pass 1). The new shared
+`sortDowntimesByChapterRecency` defaults an unmatched `chapter_id` (one with no entry in `cycles`)
+to `game_number: 0`. `archive-tab.js`'s OLD comparator fell back through `cycle_number`/
+`created_at`/`_id` before defaulting to `''`; `downtime-tab.js`'s OLD comparator ignored
+`game_number` entirely and sorted by raw `_id`. Whether any live `tm_game.downtime_submissions`
+document actually has a `chapter_id` that doesn't resolve to a real chapter was not checked live
+this session — worth a live census before writing the regression test, not just writing a synthetic
+fixture.
+
+**Not scoped or built beyond this entry.** All four verified real by direct code/git-history
+inspection during triage; none block storytab.5 itself, since all four are pre-existing behaviour
+storytab.5 only reused or made more visible, not new defects it introduced.

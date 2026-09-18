@@ -151,7 +151,7 @@ export async function initDowntimeTab(el, char, territories = []) {
 
 // Story storytab.5, AC 3/AC 9: the fetch+merge+sort data logic, extracted into one
 // DOM-free async function so it can be unit-tested directly (this repo's `vitest.config.js`
-// has no jsdom environment — see that story's Story-Prep Question 2, closed) rather than
+// has no jsdom environment, see that story's Story-Prep Question 2, closed) rather than
 // only provable via a live-browser check. `renderPastOutcomes` below is left doing only
 // DOM work: build the accordion HTML, wire the raw-toggle handlers.
 export async function loadPastOutcomesData(char) {

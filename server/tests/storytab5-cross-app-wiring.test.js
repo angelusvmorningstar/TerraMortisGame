@@ -1,15 +1,15 @@
 /**
- * Story storytab.5 — wires BOTH live downtime-reading surfaces (archive-tab.js's "STORY"
+ * Story storytab.5, wires BOTH live downtime-reading surfaces (archive-tab.js's "STORY"
  * nav and downtime-tab.js's Info tab "Past Outcomes" accordion) to the cross-app merge
  * storytab.1 built, plus AC 4's shared sort fix. No jsdom in this repo's `vitest.config.js`
- * (Story-Prep Question 2, closed) — so this suite proves the DOM-free data layer
+ * (Story-Prep Question 2, closed), so this suite proves the DOM-free data layer
  * (`loadArchiveDowntimeData`, `loadPastOutcomesData`, `sortDowntimesByChapterRecency`)
  * against the REAL production functions, mirroring `story-tab-cross-app-render.test.js`'s
  * own precedent. AC 5's mandatory live-browser check is what proves the actual DOM wiring;
  * this suite does not attempt to substitute for it.
  */
 
-// Browser shims — sheet.js (imported transitively via archive-tab.js) and story-tab.js's
+// Browser shims: sheet.js (imported transitively via archive-tab.js) and story-tab.js's
 // own auth/discord.js read pull api.js's `location` reference and localStorage. Same
 // pattern as collective-2-compound-generalisation.test.js / oath-b-suspension.test.js.
 // api.js itself is mocked below, so its real top-level code never runs, but the shims stay
@@ -50,7 +50,7 @@ beforeEach(() => { api.calls = []; });
 // ── AC 4: the shared sort helper, reproducing Dana's exact chorus-review finding ──────
 
 describe('storytab.5 AC 4: sortDowntimesByChapterRecency', () => {
-  it('places a TM-Story-sourced entry (synthetic game_number ~1e9) ahead of a real Game 8 entry — the bug archive-tab.js\'s old string localeCompare got wrong', () => {
+  it('places a TM-Story-sourced entry (synthetic game_number ~1e9) ahead of a real Game 8 entry, the bug archive-tab.js\'s old string localeCompare got wrong', () => {
     const REAL_GAME_8 = { _id: 'game-sub-8', character_id: 'charA', chapter_id: 'chapterH', published_outcome: 'Game 8 outcome.' };
     const REAL_CHAPTER_8 = { _id: 'chapterH', game_number: 8, label: 'Game 8' };
 
@@ -58,7 +58,7 @@ describe('storytab.5 AC 4: sortDowntimesByChapterRecency', () => {
     const adaptedSub = adaptStoryReport(storyReport, 'charA', 0);
     const syntheticChapter = syntheticChapterFor('charA', 0);
 
-    // Deliberately insert the tm_game entry FIRST — the sort, not insertion order, must decide.
+    // Deliberately insert the tm_game entry FIRST; the sort, not insertion order, must decide.
     const subs = [REAL_GAME_8, adaptedSub];
     const cycles = [REAL_CHAPTER_8, syntheticChapter];
 
@@ -137,12 +137,12 @@ describe('storytab.5 AC 2/AC 9: archive-tab.js wires the cross-app merge via loa
     expect(downtimeSubs[0].published_outcome).toBe('Game 9 (TM Story).');
     expect(downtimeSubs[1].published_outcome).toBe('Game 8 outcome.');
     expect(cycleMap[String(downtimeSubs[1].chapter_id)]).toBe('Game 8');
-    // The story-tab-story route was actually called — proves the merge is wired, not just
+    // The story-tab-story route was actually called, proving the merge is wired, not just
     // that this call would have been safe to make.
     expect(api.calls.some(u => u.startsWith('/api/downtime_submissions/story-tab'))).toBe(true);
   });
 
-  it('degrades to tm_game-only data, still correctly sorted, when the TM Story fetch fails — never blanks the list (AC 6)', async () => {
+  it('degrades to tm_game-only data, still correctly sorted, when the TM Story fetch fails, never blanks the list (AC 6)', async () => {
     api.impl = async (url) => {
       if (url === '/api/downtime_submissions') {
         return [
@@ -185,7 +185,7 @@ describe('storytab.5 AC 2/AC 9: archive-tab.js wires the cross-app merge via loa
 describe('storytab.5 AC 3/AC 9: downtime-tab.js wires the cross-app merge via loadPastOutcomesData', () => {
   const CHAR = { _id: 'charA' };
 
-  it('merges a TM-Story-sourced entry into Past Outcomes, correctly ordered ahead of tm_game entries — replacing the old raw _id-string sort', async () => {
+  it('merges a TM-Story-sourced entry into Past Outcomes, correctly ordered ahead of tm_game entries, replacing the old raw _id-string sort', async () => {
     api.impl = async (url) => {
       if (url === '/api/chapters') return [{ _id: 'chapterH', game_number: 8, label: 'Game 8' }];
       if (url === '/api/downtime_submissions') {
@@ -207,7 +207,7 @@ describe('storytab.5 AC 3/AC 9: downtime-tab.js wires the cross-app merge via lo
     expect(api.calls.some(u => u.startsWith('/api/downtime_submissions/story-tab'))).toBe(true);
   });
 
-  it('degrades to tm_game-only data, still correctly sorted, when the TM Story fetch fails — never blanks the accordion (AC 6)', async () => {
+  it('degrades to tm_game-only data, still correctly sorted, when the TM Story fetch fails, never blanks the accordion (AC 6)', async () => {
     api.impl = async (url) => {
       if (url === '/api/chapters') {
         return [

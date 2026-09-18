@@ -222,8 +222,8 @@ describe('storytab4-readonly-guard: AC 4, client-side no-local-persistence scan'
   // Story storytab.5, AC 8: this guard's own Codex Pass 3a found and fixed exactly this
   // class of gap once already (the AC 4 scan stopped at the merge function's own boundary
   // until extended to follow data into its actual callers). storytab.5 adds TWO further
-  // callers of fetchAndMergeStoryTabDowntimes — archive-tab.js's loadArchiveDowntimeData and
-  // downtime-tab.js's loadPastOutcomesData — checked here rather than assumed covered.
+  // callers of fetchAndMergeStoryTabDowntimes: archive-tab.js's loadArchiveDowntimeData and
+  // downtime-tab.js's loadPastOutcomesData, checked here rather than assumed covered.
   it('loadArchiveDowntimeData (archive-tab.js, storytab.5\'s first new caller) introduces no downstream persistence of the TM-Story-sourced merge', () => {
     const source = read('public/js/tabs/archive-tab.js');
     const fn = extractBetween(

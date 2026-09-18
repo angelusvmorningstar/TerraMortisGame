@@ -381,9 +381,12 @@ one AC only partially verified for a real, structural reason (below), not skippe
   test.js`'s own established pattern (`vi.mock` on `../../public/js/data/api.js`, following
   `bl2-bloodlines-cache.test.js`'s precedent for that mock shape).
 - **Extended**: `storytab4-readonly-guard.test.js` — 2 new tests (AC 8). 16/16 passing (was 14).
-- **Regression**: `story-tab-cross-app-render.test.js` (18/18, unchanged) confirms AC 1/AC 4's
-  refactor didn't alter `renderChronicle`'s own AC 6 block-rule behaviour. Full targeted set (5
-  files touching the four changed source files): 78/78 passing.
+- **Regression**: `story-tab-cross-app-render.test.js` (4/4, unchanged) confirms AC 1/AC 4's
+  refactor didn't alter `renderChronicle`'s own AC 6 block-rule behaviour. **Correction, external
+  Codex review, 2026-09-19**: the first draft of this section wrongly wrote "18/18" for this file
+  alone; 18 was the combined count from an earlier verification run of this file plus
+  `storytab4-readonly-guard.test.js` together, not this file's own count. Re-verified in isolation:
+  4/4. Full targeted set (5 files touching the four changed source files): 78/78 passing.
 - **Playwright**: `tests/fix-player-skill-acq-outcome.spec.js` (the one e2e spec exercising
   `renderPastOutcomes`' real DOM output) — 1 of 3 tests fails (`AC-1: skill acquisition
   outcome_summary appears in player Resources group`, `.merit-summary-section` not found).
@@ -409,14 +412,21 @@ via `local-test-token`, character Yusuf Kalusicj):
 **What could NOT be verified locally, and why**: seeing a real TM-Story-sourced Game 8+ entry
 render on either surface. `local-test-token` is a local-only auth bypass; the bearer token still
 gets forwarded verbatim to TM Story's real, deployed production API (`storyApiBaseUrl()` defaults
-to `https://tm-story-api.onrender.com`, and `TM_STORY_API_URL` is unset locally). That production
-API almost certainly runs `NODE_ENV=production`, where TM Story's own equivalent local-test bypass
-(confirmed to exist in TM Story's `middleware/auth.js`, gated by `devSurfacesEnabled()`) is
-deliberately fails-closed. A same-session attempt to run TM Story's own server locally against its
-`NODE_ENV=development` bypass hit a separate, unrelated blocker (its local `.env` targets a
-`tm_wiki_dev` seed database via a credential that failed Mongo auth on this run) and was abandoned
-rather than chased further, as out of scope for a TM Game story to be debugging a sibling repo's
-local dev setup.
+to `https://tm-story-api.onrender.com`, and `TM_STORY_API_URL` is unset locally). The working
+hypothesis is that this production API runs `NODE_ENV=production`, where TM Story's own equivalent
+local-test bypass (confirmed to exist in TM Story's `middleware/auth.js`, gated by
+`devSurfacesEnabled()`) is deliberately fails-closed. **Correction, external Codex review,
+2026-09-19**: the local `/story-tab` route's own empty response (`{"downtimes":[],"chapters":[]}`
+at HTTP 200) does not by itself distinguish an auth rejection from a plain network/connectivity
+failure — Codex's own independent run of the same call reproduced the identical empty response
+while its own server log showed `fetch failed`, a transport-level failure, not a captured HTTP
+status from TM Story's API at all. The degrade behaviour itself is still genuinely confirmed (the
+merge failed and both surfaces still rendered `tm_game` data correctly); the specific auth-boundary
+explanation for *why* it failed is a plausible, uncaptured hypothesis, not a proven diagnosis. A
+same-session attempt to run TM Story's own server locally against its `NODE_ENV=development` bypass
+hit a separate, unrelated blocker (its local `.env` targets a `tm_wiki_dev` seed database via a
+credential that failed Mongo auth on this run) and was abandoned rather than chased further, as out
+of scope for a TM Game story to be debugging a sibling repo's local dev setup.
 
 **Net**: the code path, the data contract, and the degrade behaviour are all confirmed correct by
 real evidence (10 new automated tests reproducing the exact bug and fix with real production
@@ -432,3 +442,99 @@ Game 8/9 entry is the actual bar AC 5 sets, and no amount of further local tooli
 Named per Story-Prep Question 1: whether `renderStoryTab`'s zero-caller status is intentional
 mid-rollout parking or an orphaned wiring gap of its own, worth a deliberate look. Not investigated
 further here.
+
+## Senior Developer Review (Codex, external)
+
+**2026-09-19. External Codex review (3-layer, `model_reasoning_effort=high`, one session, ordered
+passes).** Full raw findings preserved at
+`specs/stories/code-review/storytab.5-codex-findings.md`; do not trust this summary in place of
+that file. Every finding below was independently re-verified against the real code/git history/a
+fresh test run before triage, not accepted on the reviewer's own authority — see
+`return-protocol.md`'s tripwires (both passed: the review names this change's real files, and the
+attestation shows genuinely different, progressively-expanding file access per pass, with one
+honestly-disclosed minor blinding leak in Pass 3a that the reviewer did not use to revise earlier
+passes).
+
+**Ship assessment (Codex's own words, largely accurate)**: "not ready to close as shipped/accepted"
+because AC 5's live-source check remains undone — this matches, not contradicts, what this story's
+own Dev Agent Record already said before the review ran. Status stays `review`, not `done`.
+
+### Patched (2 findings, both real, both this session)
+
+- **[Pass 3b] Medium — `story-tab-cross-app-render.test.js` overstated as 18/18.** CONFIRMED real
+  by an isolated re-run: 4/4. The "18" was a genuine transcription error, the combined count from an
+  earlier run of that file together with `storytab4-readonly-guard.test.js`. Fixed in the Dev Agent
+  Record's own Regression bullet, with the correction dated and attributed.
+- **[Pass 3a] Low — new comments/test descriptions violate AC 10's no-em-dash rule.** CONFIRMED
+  real for genuinely new content: 15 em-dashes across 5 files (`app.js`, `archive-tab.js`,
+  `downtime-tab.js`, `storytab4-readonly-guard.test.js`, `storytab5-cross-app-wiring.test.js`), 4 of
+  them inside `it(...)` test descriptions. Cross-checked against the pre-existing codebase first
+  (both tab files already carried 9-12 em-dashes each in comments predating this story, at base
+  commit `9ab7fe31`) to distinguish genuinely new violations from ambient convention rather than
+  patch on the reviewer's say-so alone. All 15 genuinely-new instances removed; re-ran the full
+  targeted suite after (78/78, unchanged).
+
+### Deferred (4 findings, all real, none blocking, logged to `specs/deferred-work.md`)
+
+- **[Pass 1] Medium — the two new loaders handle an identical initial-fetch failure differently.**
+  CONFIRMED real via `git show 9ab7fe31` on both original functions: the asymmetry is
+  byte-for-byte pre-existing in each file's own original inline code, not introduced by this
+  story's extraction. Worth fixing given the two functions now share a name pattern and a claimed
+  job, making the inconsistency more conspicuous than before. Logged, not fixed here (would touch
+  behaviour beyond this story's own scope of wiring the data source).
+- **[Pass 2] Medium — no timeout around the cross-app fetch, now on four call sites instead of
+  two.** CONFIRMED pre-existing (storytab.1's own two original callers already lacked one);
+  storytab.5 doubles the exposed surface, does not introduce the gap itself. Logged.
+- **[Pass 3a] Medium — AC 6/7's literal "exercise the render functions" wording isn't met by tests
+  against the extracted loaders alone.** CONFIRMED real and worth naming explicitly: a genuine
+  tension between AC 6/7's literal text and AC 9's own explicit, deliberate ruling that DOM-wiring
+  proof is AC 5's job, not the unit-test layer's. Not resolved unilaterally here; logged so whoever
+  next touches this file is aware AC 5's own live check is covering two ACs' worth of proof, not
+  one.
+- **[Pass 1] Low — orphan/legacy-chapter sort ordering has no regression test.** CONFIRMED the
+  fallback behaviour genuinely differs from each file's own prior comparator for an unmatched
+  `chapter_id`. Whether any live document actually hits this path was not checked this session
+  (Codex's own confidence on real-world applicability was explicitly "low-to-medium"). Logged as
+  "verify against live data first" rather than writing a test against a possibly-nonexistent case.
+
+### Dismissed (2 findings, with recorded evidence)
+
+- **[Pass 1] Low — Archive's outer fetch catch is dead-letter error handling.** TRUE as an
+  observation (the outer `catch` can only be reached by an unusual synchronous throw, not by a
+  normal `apiGet` rejection, which is already consumed by its own inner `.catch()`). CONFIRMED
+  pre-existing via `git show 9ab7fe31`, byte-identical to the original. Dismissed as a defect this
+  story introduces; the observation itself is accurate and could be raised again independently of
+  this story if someone wants to clean up the pre-existing shape.
+- **[Pass 3a] Low — AC 2/3 literally require a direct call from the render function; the
+  implementation calls indirectly via the new loader.** TRUE as a literal-wording mismatch.
+  Dismissed as a real defect: AC 9 (added to this same story during its own chorus revision,
+  RULED by Angelus) explicitly requires exactly this extraction pattern, and is the later, more
+  specific instruction covering this exact implementation choice. AC 2/3's "right after its
+  existing fetch" wording describes the insertion POINT relative to the original inline code, which
+  the extraction preserves faithfully (the loader's own internal call sits at the equivalent point);
+  it does not mandate the call stay textually inside the render function once AC 9 requires
+  otherwise.
+
+### Confirmed, not a finding needing disposition
+
+- **[Pass 3b] Low — the local route's empty response doesn't distinguish an auth rejection from a
+  network failure.** A real, fair correction to this story's own Dev Agent Record wording (that
+  section originally said TM Story's production API "almost certainly" runs `NODE_ENV=production`
+  as if confirmed). Corrected in place, in the Dev Agent Record's own AC 5 section, softened to
+  state this as the working hypothesis it actually is, with Codex's own independent reproduction of
+  the same ambiguity credited directly.
+- **[Pass 1/2/3a] High/Medium/Low — "None found."** sections taken at face value; no independent
+  search was made for findings Codex explicitly reported finding none of, consistent with treating
+  "found nothing" as a real result rather than a gap to double-check.
+
+### Gate re-verification
+
+Re-ran the exact suites Codex's own Pass 3b ran after applying the two patches above:
+`npx vitest run tests/storytab5-cross-app-wiring.test.js tests/storytab4-readonly-guard.test.js
+tests/story-tab-cross-app-render.test.js tests/fix.398.revision-note-prompt-injection.test.js
+tests/issue-1156-eqc5-remove-skill-acquisition.test.js` — **78/78 passing**, matching Codex's own
+independently-derived diagnostic-config count and this story's own original Dev Agent Record claim
+for the same 5-file set (Codex could not run the repo's own configured global setup locally, since
+its sandboxed environment has no outbound MongoDB access; its own substitute diagnostic config
+arrived at the identical 78/78 total via a different route, which is corroborating evidence, not a
+discrepancy).
