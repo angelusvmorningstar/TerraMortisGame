@@ -1,6 +1,13 @@
 # Story storytab.1: Inter-Service Downtime Fetch — Story Tab Reads TM Story
 
-## Status: backlog
+## Status: backlog — (a)-vs-(b) RULED, 2026-09-18 (Angelus, direct: option (b), reversing this
+## story's own original recommendation below). **This story now DEPENDS ON `../TM Story/specs/
+## stories/74-1-downtime-allowlist-widen-for-cross-app-parity.md` landing first** — do not start
+## `storytab.1` itself until 74-1 is done, since the whole point of choosing (b) was ONE renderer
+## fed by ONE consistent shape, not a temporary (a)-shaped renderer to throw away once 74-1 lands.
+## The reasoning below (kept for the record) argued for (a) specifically to avoid this cross-repo
+## dependency — Angelus weighed that trade-off and chose correctness/one-code-path over shipping
+## storytab.1 sooner. Re-sequence: 74-1 first, then storytab.1.
 
 ## Story
 

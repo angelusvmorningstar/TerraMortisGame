@@ -11,6 +11,14 @@ downtime at all" blocker, versus `../TM Story/specs/epic-73-papers-reading-exper
 readability/cosmetic polish on a page that at least technically shows the data. This is an explicit
 re-sequencing call from Angelus, not this epic's own default ordering.
 
+**RE-SEQUENCED WITHIN THIS EPIC, same night, once `storytab.1`'s own (a)-vs-(b) decision was put to
+Angelus directly**: he ruled (b) — widen TM Story's own allowlist — over this story's own original
+(a)-favouring recommendation. That means one single story living in `../TM Story/specs/stories/
+74-1-downtime-allowlist-widen-for-cross-app-parity.md` (nominally part of the LOWER-priority
+`epic-73` bucket) is now a real PREREQUISITE of this epic's own foundation story, `storytab.1`. Build
+order: **74-1 first, then storytab.1, then storytab.2-4.** Don't let "epic-73 is lower priority"
+be read as "74-1 can wait" — it can't, this epic depends on it directly.
+
 ## Origin
 
 Angelus, 2026-09-18: "I also want Story on TM game to point to the tm_story database for the most
