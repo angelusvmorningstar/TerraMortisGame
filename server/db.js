@@ -29,6 +29,11 @@ export async function connectDb() {
   client = new MongoClient(uri, {
     serverSelectionTimeoutMS: 5000,
     tls: true,
+    // Story storytab.4, AC 2: lets a test attach server/lib/write-command-monitor.js's
+    // commandStarted listener to prove a code path (the storytab.1 TM-Story fetch-and-
+    // render path) issues zero write commands. No functional effect with no listener
+    // attached — negligible driver overhead, not a behaviour change.
+    monitorCommands: true,
   });
   await client.connect();
   db = client.db(dbName);

@@ -30,8 +30,9 @@ import 'dotenv/config';
 import { ObjectId } from 'mongodb';
 import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
 import { setupDb, teardownDb } from './helpers/db-setup.js';
-import { getCollection } from '../db.js';
+import { getCollection, getClient } from '../db.js';
 import * as dbModule from '../db.js';
+import { attachCommandMonitor, assertNoWriteCommands } from '../lib/write-command-monitor.js';
 
 let app;
 const realFetch = globalThis.fetch;
@@ -412,6 +413,63 @@ describe('GET /api/downtime_submissions/story-tab', () => {
       expect(res.body.downtimes[0]).not.toHaveProperty('_internal_st_note');
       expect(res.body.downtimes[0]).not.toHaveProperty('owner_email');
       expect(res.body.downtimes[0]).not.toHaveProperty('raw_mongo_doc');
+    });
+  });
+
+  describe('Story storytab.4: read-only / no-write-back guard (AC 2)', () => {
+    // AC 2: exercises the FULL fetch-and-render path (TM Story mocked, the real local
+    // dedup Mongo query included) with a live commandStarted monitor attached to the
+    // real shared test client, and asserts zero write commands were issued anywhere on
+    // `tm_game` during it. Complements the lexical guard (storytab4-readonly-guard.test.js
+    // scans the SOURCE); this watches the WIRE.
+    it('issues no write command against Mongo while serving a full fetch + local-dedup + response cycle', async () => {
+      const { commands, detach } = attachCommandMonitor(getClient());
+      try {
+        globalThis.fetch = async () => ({
+          ok: true,
+          json: async () => ({
+            downtimes: [
+              { cycle_id: 'cyc-guard-1', narrative: 'Guard-path exercise, newer.' },
+              { cycle_id: 'cyc-guard-2', narrative: 'Guard-path exercise, older.' },
+            ],
+          }),
+        });
+        const res = await request(app)
+          .get('/api/downtime_submissions/story-tab?character_id=charGuard')
+          .set('X-Test-User', playerUser(['charGuard']))
+          .set('Authorization', 'Bearer tok');
+        expect(res.status).toBe(200);
+        expect(res.body.downtimes).toHaveLength(2);
+      } finally {
+        detach();
+      }
+      // Not a vacuous pass: the local dedup lookup issues a real `find`, so the monitor
+      // must have recorded SOMETHING — confirming it was actually live for this request,
+      // not attached-but-silent because monitorCommands somehow never fired.
+      expect(commands.length).toBeGreaterThan(0);
+      expect(() => assertNoWriteCommands(commands)).not.toThrow();
+    });
+
+    // Discrimination: proves the assertion above is a real guard and not vacuously
+    // green because the monitor never actually observes anything — same principle as
+    // write-command-monitor.test.js's own self-test, but against the REAL client this
+    // story wires monitorCommands:true onto (server/db.js).
+    it('(discrimination) the live monitor DOES catch a real write on the same client, proving the guard above is not vacuous', async () => {
+      const { commands, detach } = attachCommandMonitor(getClient());
+      let insertedId;
+      try {
+        const result = await getCollection('downtime_submissions').insertOne({
+          character_id: 'charGuardDiscrimination',
+          _test_seeded: true,
+          _purpose: 'storytab.4 AC2 discrimination proof — deleted immediately below',
+        });
+        insertedId = result.insertedId;
+        expect(commands).toContain('insert');
+        expect(() => assertNoWriteCommands(commands)).toThrow(/insert/);
+      } finally {
+        detach();
+        if (insertedId) await getCollection('downtime_submissions').deleteOne({ _id: insertedId });
+      }
     });
   });
 });

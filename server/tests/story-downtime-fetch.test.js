@@ -42,6 +42,24 @@ describe('fetchStoryDowntimes', () => {
     expect(result).toEqual({ ok: true, downtimes: [{ cycle_id: 'cyc-1' }] });
   });
 
+  // Story storytab.4, AC 3: the cheapest possible guard — the outbound call itself must
+  // be a bodyless GET, never a write-shaped verb, regardless of what the Mongo-level
+  // guard (write-command-monitor.js) can or can't prove.
+  it('Story storytab.4 AC 3: issues a GET with no request body (no method override, no body key at all)', async () => {
+    let capturedOpts = null;
+    globalThis.fetch = async (url, opts) => {
+      capturedOpts = opts;
+      return { ok: true, json: async () => ({ downtimes: [] }) };
+    };
+    await fetchStoryDowntimes({ authorization: 'Bearer x', characterId: 'charA' });
+    expect(capturedOpts).not.toBeNull();
+    // No explicit method means the platform default, GET — asserting it is undefined
+    // (rather than just "not POST") catches a future edit adding ANY override, not only
+    // the obviously-wrong ones.
+    expect(capturedOpts.method).toBeUndefined();
+    expect(capturedOpts).not.toHaveProperty('body');
+  });
+
   it('reads the base URL from TM_STORY_API_URL when set', async () => {
     const prev = process.env.TM_STORY_API_URL;
     process.env.TM_STORY_API_URL = 'https://tm-story-api.example.test';
