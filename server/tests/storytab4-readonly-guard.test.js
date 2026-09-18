@@ -218,4 +218,31 @@ describe('storytab4-readonly-guard: AC 4, client-side no-local-persistence scan'
     );
     expect(scan(callers, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
   });
+
+  // Story storytab.5, AC 8: this guard's own Codex Pass 3a found and fixed exactly this
+  // class of gap once already (the AC 4 scan stopped at the merge function's own boundary
+  // until extended to follow data into its actual callers). storytab.5 adds TWO further
+  // callers of fetchAndMergeStoryTabDowntimes — archive-tab.js's loadArchiveDowntimeData and
+  // downtime-tab.js's loadPastOutcomesData — checked here rather than assumed covered.
+  it('loadArchiveDowntimeData (archive-tab.js, storytab.5\'s first new caller) introduces no downstream persistence of the TM-Story-sourced merge', () => {
+    const source = read('public/js/tabs/archive-tab.js');
+    const fn = extractBetween(
+      source,
+      'export async function loadArchiveDowntimeData(char) {',
+      'async function renderArchiveList() {',
+    );
+    expect(scan(fn, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
+    expect(fn).toMatch(/apiGet\(/);
+  });
+
+  it('loadPastOutcomesData (downtime-tab.js, storytab.5\'s second new caller) introduces no downstream persistence of the TM-Story-sourced merge', () => {
+    const source = read('public/js/tabs/downtime-tab.js');
+    const fn = extractBetween(
+      source,
+      'export async function loadPastOutcomesData(char) {',
+      'export async function renderPastOutcomes(el, char) {',
+    );
+    expect(scan(fn, CLIENT_PERSISTENCE_PATTERNS)).toEqual([]);
+    expect(fn).toMatch(/apiGet\(/);
+  });
 });

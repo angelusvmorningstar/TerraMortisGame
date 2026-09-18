@@ -3,7 +3,7 @@
 import { apiGet } from '../data/api.js';
 import { esc } from '../data/helpers.js';
 import { renderDowntimeTab } from './downtime-form.js';
-import { renderOutcomeWithCards } from './story-tab.js';
+import { renderOutcomeWithCards, fetchAndMergeStoryTabDowntimes, sortDowntimesByChapterRecency } from './story-tab.js';
 import { isSTRole, getUser } from '../auth/discord.js';
 import { FORM_RETIRED, RETIRED_NOTICE } from '../downtime/form-retirement.js';
 
@@ -149,12 +149,12 @@ export async function initDowntimeTab(el, char, territories = []) {
   el.appendChild(currentZone);
 }
 
-/** Render past outcomes accordion into a target element. Standalone — can be
- *  called independently of the downtime form tab. */
-export async function renderPastOutcomes(el, char) {
-  if (!el || !char) return;
-  el.innerHTML = '';
-
+// Story storytab.5, AC 3/AC 9: the fetch+merge+sort data logic, extracted into one
+// DOM-free async function so it can be unit-tested directly (this repo's `vitest.config.js`
+// has no jsdom environment — see that story's Story-Prep Question 2, closed) rather than
+// only provable via a live-browser check. `renderPastOutcomes` below is left doing only
+// DOM work: build the accordion HTML, wire the raw-toggle handlers.
+export async function loadPastOutcomesData(char) {
   let cycles = [], subs = [];
   try {
     [cycles, subs] = await Promise.all([
@@ -166,17 +166,30 @@ export async function renderPastOutcomes(el, char) {
         s.published_outcome = s.st_review.outcome_text;
       }
     });
-  } catch { return; }
+  } catch {
+    return { publishedSubs: [], cycles: [] };
+  }
+
+  [subs, cycles] = await fetchAndMergeStoryTabDowntimes(char, subs, cycles);
 
   const charId = String(char._id);
+  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
+  const publishedSubs = sortDowntimesByChapterRecency(filtered, cycles);
+
+  return { publishedSubs, cycles };
+}
+
+/** Render past outcomes accordion into a target element. Standalone — can be
+ *  called independently of the downtime form tab. */
+export async function renderPastOutcomes(el, char) {
+  if (!el || !char) return;
+  el.innerHTML = '';
+
+  const { publishedSubs, cycles } = await loadPastOutcomesData(char);
+  if (!publishedSubs.length) return;
+
   const cycleMap = {};
   for (const c of cycles) cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
-
-  const publishedSubs = subs
-    .filter(s => String(s.character_id) === charId && s.published_outcome)
-    .sort((a, b) => (String(b._id) > String(a._id) ? 1 : -1));
-
-  if (!publishedSubs.length) return;
 
   let h = '<h3 class="dt-history-heading">Past Outcomes</h3>';
   for (const sub of publishedSubs) {

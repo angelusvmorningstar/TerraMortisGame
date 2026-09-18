@@ -1,17 +1,32 @@
 # Epic: Story Tab Reads TM Story's `tm_story` Database (Cross-Repo)
 
-## Status: DONE, 2026-09-19 — all 4 stories complete. storytab.1 done 2026-09-18 (see that story's own
-## Senior Developer Review for the full account, including a real P0 security-test regression found
-## and fixed); storytab.2 also done 2026-09-18 (a dedup hotfix + external-review fixes; see its own
-## Senior Developer Review — includes a real process incident where the external reviewer fabricated
-## a decision attribution, caught and corrected before Angelus was actually asked); storytab.3 also
-## done 2026-09-18 (test-coverage-only story — audited storytab.1/.2's existing tests first, found
-## most ACs already satisfied, filled 2 real verification gaps with 5 new tests, no production code
-## changed; see its own Dev Agent Record); storytab.4 done 2026-09-19 (the read-only/no-write-back
-## structural guard — a lexical source scanner plus a live Mongo command-monitor wired against the
-## real shared test client, one step further than TM Story's own equivalent precedent; external Codex
-## review found 5 real Medium + 3 real Low gaps in the guard's own coverage, all verified and patched
-## with prove-discrimination including 2 real-source injection probes; see its own Dev Agent Record).
+## Status: DONE, 2026-09-19 — 5 stories complete (storytab.1-4 PLUS storytab.5, added
+## 2026-09-19, corrected here per that story's own AC 11). storytab.1 done 2026-09-18 (see that
+## story's own Senior Developer Review for the full account, including a real P0 security-test
+## regression found and fixed); storytab.2 also done 2026-09-18 (a dedup hotfix + external-review
+## fixes; see its own Senior Developer Review — includes a real process incident where the external
+## reviewer fabricated a decision attribution, caught and corrected before Angelus was actually
+## asked); storytab.3 also done 2026-09-18 (test-coverage-only story — audited storytab.1/.2's
+## existing tests first, found most ACs already satisfied, filled 2 real verification gaps with 5
+## new tests, no production code changed; see its own Dev Agent Record); storytab.4 done 2026-09-19
+## (the read-only/no-write-back structural guard — a lexical source scanner plus a live Mongo
+## command-monitor wired against the real shared test client, one step further than TM Story's own
+## equivalent precedent; external Codex review found 5 real Medium + 3 real Low gaps in the guard's
+## own coverage, all verified and patched with prove-discrimination including 2 real-source
+## injection probes; see its own Dev Agent Record).
+##
+## storytab.1-4 built and tested against `story-tab.js`'s own two callers
+## (`renderLatestReport`/`renderStoryTab`), neither of which is the code path a real player/ST
+## reaches — a named, written scope cut at this epic's own original scoping time (see "Why this is
+## a real, live, current bug" below), not a blind spot. **storytab.5, done 2026-09-19, is the story
+## that actually closes this epic's own stated goal** ("real downtimes are currently invisible...
+## the actual 'players can't see their downtime at all' blocker"): it wires the two live surfaces a
+## player/ST actually reaches (`archive-tab.js`'s "STORY" nav, `downtime-tab.js`'s Info tab "Past
+## Outcomes" accordion) to the same merge, plus a real cross-source sort-bug fix (Dana's chorus-review
+## finding) neither of storytab.1-4 needed, since neither of their own two callers was ever fed real
+## mixed tm_game/TM-Story data through a comparator that diverged from `story-tab.js`'s own. See
+## `stories/storytab.5.archive-tab-cross-app-wiring.story.md` for the full account.
+##
 ## Was PRIORITY over `../TM Story/specs/epic-73-papers-reading-experience.md`; that re-sequencing call
 ## is now moot with this epic closed.
 
@@ -187,6 +202,14 @@ must make an explicit call between (a) and (b) rather than discovering this mid-
    decision/widening" piece, gated on Story storytab.1's own (a)-vs-(b) call landing on (b), and on a
    security review Winston explicitly flagged as deserving its own separate pass, not bundled into the
    plumbing.
+6. **`stories/storytab.5.archive-tab-cross-app-wiring.story.md`** — added 2026-09-19, after storytab.1-4
+   closed. Wires the TWO live surfaces a real player/ST actually reaches — `archive-tab.js`'s "STORY"
+   nav and `downtime-tab.js`'s Info tab "Past Outcomes" accordion — to the same cross-app merge
+   storytab.1 built, neither of which storytab.1-4 touched (both call `story-tab.js`'s own two
+   callers, not either of these). Also fixes a real cross-source sort bug found during that story's
+   own chorus review (Dana): a string comparator that put a TM-Story-sourced entry's synthetic
+   `game_number` behind a real one, via one shared sort helper replacing three independently-coded
+   comparators. This is the story that actually closes this epic's own stated goal.
 
 ## Sequencing
 

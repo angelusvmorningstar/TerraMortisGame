@@ -593,11 +593,15 @@ function goTab(t, ctx) {
     const miscEl = document.getElementById('misc-past-outcomes');
     const char = _activeMoreChar();
     if (miscEl && char && !miscEl.innerHTML.trim()) renderPastOutcomes(miscEl, char);
-    // 2026-08-29: this is now the ONLY surface a published downtime outcome is
-    // visible on (the Downtime tab itself is gone). _markSubViewed used to fire
-    // from that tab's own dispatch; moved here so the #more-badge "unread
-    // narrative" indicator can still be cleared by a player actually reading it,
-    // rather than being permanently stuck on.
+    // 2026-08-29: this is NOT the only surface a published downtime outcome is
+    // visible on — the "STORY" nav's Downtime Reports list (initArchiveTab,
+    // archive-tab.js) shows the same data. Corrected Story storytab.5, 2026-09-19:
+    // the original claim here was already false before that story (archive-tab.js
+    // already showed it) and was found stale during that story's own chorus review.
+    // _markSubViewed used to fire from the old Downtime tab's own dispatch; moved
+    // here so the #more-badge "unread narrative" indicator can still be cleared by
+    // a player actually reading it on this surface, rather than being permanently
+    // stuck on.
     _markSubViewed();
   }
   // 'downtime' and 'ordeals' tab-body dispatch removed 2026-08-29 (Angelus):

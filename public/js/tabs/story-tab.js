@@ -36,13 +36,39 @@ const ACTION_TYPE_LABELS = {
 // repo's own sub shape and mints a matching synthetic chapter, so the EXISTING
 // game_number-descending sort below needs no change to place them correctly (AC 6's
 // ruled provisional block rule \u2014 see server/lib/story-downtime-fetch.js's own header).
-async function fetchAndMergeStoryTabDowntimes(char, subs, cycles) {
+// Story storytab.5, AC 1: exported so archive-tab.js and downtime-tab.js (the two live
+// surfaces a player/ST actually reaches, see that story's own Background) can call it
+// too \u2014 this file's own two callers below are no longer the only ones.
+export async function fetchAndMergeStoryTabDowntimes(char, subs, cycles) {
   try {
     const { downtimes, chapters } = await apiGet(`/api/downtime_submissions/story-tab?character_id=${char._id}`);
     return [[...subs, ...downtimes], [...cycles, ...chapters]];
   } catch {
     return [subs, cycles];
   }
+}
+
+// Story storytab.5, AC 4 (RULED, Angelus, 2026-09-19 \u2014 Dana's Option 2): the ONE shared
+// sort every surface that lists a character's downtime chronologically must use, wrapping
+// this file's own pre-existing numeric game_number-descending compare (already correct,
+// already proven by storytab.1's own AC 6 tests). Replaces three independently-coded
+// comparators that had silently drifted apart: archive-tab.js's own string
+// `localeCompare`, and downtime-tab.js's own raw `_id`-string compare \u2014 both broken by the
+// exact same cause, a comparator never designed against a TM-Story-sourced entry's
+// synthetic game_number (server/lib/story-downtime-fetch.js's syntheticChapterFor assigns
+// a value far above any real game_number specifically so THIS numeric compare keeps AC 6's
+// block rule intact; a string compare on that same value does not, see this story's own
+// AC 4 for the reproduced bug). Takes the raw `cycles` array, not a pre-built map, so every
+// call site can hand it whatever it already fetched without reshaping first. Non-mutating \u2014
+// returns a new array, never sorts `subs` in place.
+export function sortDowntimesByChapterRecency(subs, cycles) {
+  const cycleMap = {};
+  for (const c of cycles) cycleMap[String(c._id)] = c;
+  return [...subs].sort((a, b) => {
+    const ga = cycleMap[String(a.chapter_id)]?.game_number ?? 0;
+    const gb = cycleMap[String(b.chapter_id)]?.game_number ?? 0;
+    return gb - ga;
+  });
 }
 
 /**
@@ -72,13 +98,8 @@ export async function renderLatestReport(el, char) {
   for (const c of cycles) cycleMap[String(c._id)] = c;
 
   const charId = String(char._id);
-  const published = subs
-    .filter(s => String(s.character_id) === charId && s.published_outcome)
-    .sort((a, b) => {
-      const ga = cycleMap[String(a.chapter_id)]?.game_number ?? 0;
-      const gb = cycleMap[String(b.chapter_id)]?.game_number ?? 0;
-      return gb - ga;
-    });
+  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
+  const published = sortDowntimesByChapterRecency(filtered, cycles);
 
   if (!published.length) {
     el.innerHTML = '<p class="placeholder-msg">No published downtime narratives yet.</p>';
@@ -208,13 +229,8 @@ export function renderChronicle(subs, cycles, char) {
   }
 
   const charId = String(char._id);
-  const published = subs
-    .filter(s => String(s.character_id) === charId && s.published_outcome)
-    .sort((a, b) => {
-      const ga = cycleMap[String(a.chapter_id)]?.game_number ?? 0;
-      const gb = cycleMap[String(b.chapter_id)]?.game_number ?? 0;
-      return gb - ga;
-    });
+  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
+  const published = sortDowntimesByChapterRecency(filtered, cycles);
 
   if (!published.length) {
     return '<p class="placeholder-msg story-placeholder">No published downtime narratives yet.</p>';

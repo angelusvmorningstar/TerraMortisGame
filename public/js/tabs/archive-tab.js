@@ -35,7 +35,7 @@ import { esc, displayName, clanIcon, covIcon } from '../data/helpers.js';
 import { renderSheet } from '../editor/sheet.js';
 import { renderReadOnlyField } from '../editor/questionnaire-render.js';
 import { QUESTIONNAIRE_SECTIONS } from './questionnaire-data.js';
-import { renderOutcomeWithCards } from './story-tab.js';
+import { renderOutcomeWithCards, fetchAndMergeStoryTabDowntimes, sortDowntimesByChapterRecency } from './story-tab.js';
 
 let _el          = null;
 let _char        = null;
@@ -50,9 +50,12 @@ export async function initArchiveTab(el, char, retiredChars) {
 
 // ── List view ─────────────────────────────────────────────────────────────────
 
-async function renderArchiveList() {
-  _el.innerHTML = '<p class="placeholder-msg">Loading…</p>';
-
+// Story storytab.5, AC 2/AC 9: the fetch+merge+sort data logic, extracted into one
+// DOM-free async function so it can be unit-tested directly (this repo's `vitest.config.js`
+// has no jsdom environment — see that story's Story-Prep Question 2, closed) rather than
+// only provable via a live-browser check. `renderArchiveList` below is left doing only DOM
+// work: build the HTML, wire the click handlers.
+export async function loadArchiveDowntimeData(char) {
   let subs = [], cycles = [];
   try {
     [subs, cycles] = await Promise.all([
@@ -66,20 +69,21 @@ async function renderArchiveList() {
     });
   } catch { /* non-fatal */ }
 
+  [subs, cycles] = await fetchAndMergeStoryTabDowntimes(char, subs, cycles);
+
   const cycleMap = {};
-  const cycleOrderMap = {};
-  for (const c of cycles) {
-    cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
-    cycleOrderMap[String(c._id)] = c.game_number ?? c.cycle_number ?? c.created_at ?? c._id;
-  }
-  const charId = String(_char._id);
-  const downtimeSubs = subs
-    .filter(s => String(s.character_id) === charId && s.published_outcome)
-    .sort((a, b) => {
-      const ka = cycleOrderMap[String(a.chapter_id)] || '';
-      const kb = cycleOrderMap[String(b.chapter_id)] || '';
-      return String(kb).localeCompare(String(ka));
-    });
+  for (const c of cycles) cycleMap[String(c._id)] = c.label || `Cycle ${String(c._id).slice(-4)}`;
+  const charId = String(char._id);
+  const filtered = subs.filter(s => String(s.character_id) === charId && s.published_outcome);
+  const downtimeSubs = sortDowntimesByChapterRecency(filtered, cycles);
+
+  return { downtimeSubs, cycleMap };
+}
+
+async function renderArchiveList() {
+  _el.innerHTML = '<p class="placeholder-msg">Loading…</p>';
+
+  const { downtimeSubs, cycleMap } = await loadArchiveDowntimeData(_char);
 
   let h = '';
 
