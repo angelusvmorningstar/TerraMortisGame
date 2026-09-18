@@ -4,8 +4,11 @@
 ## for the full account, including a real P0 security-test regression found and fixed); storytab.2
 ## also done 2026-09-18 (a dedup hotfix + external-review fixes; see its own Senior Developer Review
 ## — includes a real process incident where the external reviewer fabricated a decision attribution,
-## caught and corrected before Angelus was actually asked); storytab.3-4 not started. Still PRIORITY
-## over `../TM Story/specs/epic-73-papers-reading-experience.md`.
+## caught and corrected before Angelus was actually asked); storytab.3 also done 2026-09-18 (test-
+## coverage-only story — audited storytab.1/.2's existing tests first, found most ACs already
+## satisfied, filled 2 real verification gaps with 5 new tests, no production code changed; see its
+## own Dev Agent Record); storytab.4 not started. Still PRIORITY over
+## `../TM Story/specs/epic-73-papers-reading-experience.md`.
 
 ## Priority note (Angelus, direct, 2026-09-18, same night this epic was opened)
 
