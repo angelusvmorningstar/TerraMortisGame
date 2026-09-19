@@ -318,9 +318,20 @@ function setSheetView(view) {
   }
 }
 
-function openChar(idx) {
-  editorState.editIdx = idx;
+async function openChar(idx) {
   const c = editorState.chars[idx];
+  if (!c) return;
+  editorState.editIdx = idx;
+
+  // Load tracker from API before rendering — mirrors _switchChar's own fix for
+  // the identical bug. Without this, a Sheet opened here (including
+  // _enterPlayerView's auto-open when toggling into/restoring Player View)
+  // renders before the tracker cache is populated, so trackerRead() falls
+  // back to fromCache()'s full-max "fresh character" defaults instead of the
+  // real MongoDB-backed current values — out of sync with the ST Tracker tab,
+  // which does call ensureLoaded for every character via initTracker().
+  await ensureTrackerLoaded(c);
+
   // Update edit header
   const nameEl = document.getElementById('edit-charname');
   if (nameEl) nameEl.textContent = displayName(c) || 'Unnamed';
