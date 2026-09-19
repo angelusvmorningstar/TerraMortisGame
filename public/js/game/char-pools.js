@@ -20,6 +20,7 @@ import { esc } from '../data/helpers.js';
 import { trackerRead, trackerSpend, trackerAdj } from './tracker.js';
 import { getRole } from '../auth/discord.js';
 import { toast } from '../suite/toast.js';
+import { calcTotalInfluence } from '../editor/domain.js';
 
 // Primary attribute for each skill (most common pool pairing)
 const SKILL_ATTR = {
@@ -94,11 +95,13 @@ export function roteEligibleFor(char, skill) {
 export function renderCharPools(el, char, onTap) {
   const pools = [];
 
-  const defence = defenceForDisplay(char);
-  const hp      = calcHealth(char);
-  const wp      = calcWillpowerMax(char);
-  const vitae   = calcVitaeMax(char);
-  const speed   = calcSpeed(char);
+  const defence  = defenceForDisplay(char);
+  const hp       = calcHealth(char);
+  const wp       = calcWillpowerMax(char);
+  const vitae    = calcVitaeMax(char);
+  const speed    = calcSpeed(char);
+  const maxInf   = calcTotalInfluence(char);
+  const isPrivileged = getRole() === 'st' || getRole() === 'dev';
 
   let h = '<div class="gcp-wrap">';
 
@@ -114,12 +117,18 @@ export function renderCharPools(el, char, onTap) {
   // ── Quick spend (Game 8 live request) ──
   // Duplicate, fast-access controls for the same self-service Vitae/WP spend
   // the Sheet tab's tap-a-pip tracker already does — this row just makes it
-  // discoverable without hunting for it. Always rendered (both roles use it:
-  // player = self-spend, ST/dev = free adjust, same split as sheet.js's own
-  // tracker click-handler).
+  // discoverable without hunting for it. Vitae/WP always render (both roles
+  // use them: player = self-spend, ST/dev = free adjust, same split as
+  // sheet.js's own tracker click-handler). Influence is ST/dev-only, same
+  // rule as everywhere else in the app — Influence has its own declared-
+  // spend flow (previously the downtime form, now handled outside TM Game
+  // for a live session), it is never player-self-serviceable — so this
+  // button only renders for a privileged viewer at all, rather than
+  // rendering for players and silently no-op'ing on click.
   h += '<div class="gcp-quick-spend">'
      + '<button class="gcp-spend-btn" type="button" data-spend="vitae">− 1 Vitae</button>'
      + '<button class="gcp-spend-btn" type="button" data-spend="wp">− 1 WP</button>'
+     + (isPrivileged ? '<button class="gcp-spend-btn" type="button" data-spend="inf">− 1 Influence</button>' : '')
      + '</div>';
 
   // ── Vampire Mechanics (gdx-11, #981) ──
@@ -335,21 +344,29 @@ export function renderCharPools(el, char, onTap) {
   // adjust via trackerAdj) — no new server path, just a more visible entry
   // point onto the existing one.
   const charId = String(char._id);
+  const SPEND_KINDS = {
+    vitae: { field: 'vitae',     label: 'Vitae',      max: vitae,  read: cs => cs.vitae      ?? 0 },
+    wp:    { field: 'willpower', label: 'Willpower',  max: wp,     read: cs => cs.willpower  ?? 0 },
+    // Influence's button only ever renders for a privileged viewer (see the
+    // markup above) — trackerSpend (the player self-service, decrease-only
+    // path) deliberately has no 'inf' case, so this always goes through
+    // trackerAdj regardless of role.
+    inf:   { field: 'inf',       label: 'Influence',  max: maxInf, read: cs => cs.inf        ?? maxInf },
+  };
   el.querySelectorAll('.gcp-spend-btn').forEach(btn => {
     btn.addEventListener('click', () => {
-      const kind    = btn.dataset.spend; // 'vitae' | 'wp'
-      const field   = kind === 'vitae' ? 'vitae' : 'willpower';
-      const label   = kind === 'vitae' ? 'Vitae' : 'Willpower';
-      const max     = kind === 'vitae' ? vitae : wp;
+      const kind = SPEND_KINDS[btn.dataset.spend];
+      if (!kind) return;
+      const { field, label, max, read } = kind;
       const cs      = trackerRead(charId) || {};
-      const current = field === 'vitae' ? (cs.vitae ?? 0) : (cs.willpower ?? 0);
+      const current = read(cs);
       if (current <= 0) { toast(`No ${label} left to spend`); return; }
 
       const role = getRole();
       // trackerAdj/trackerSpend (game/tracker.js) repaint the Sheet tab's own
       // tap-a-pip tracker-block themselves when this character is the one
       // currently loaded there — no separate repaint call needed here.
-      if (role === 'st' || role === 'dev') trackerAdj(charId, field, -1);
+      if (field === 'inf' || role === 'st' || role === 'dev') trackerAdj(charId, field, -1);
       else trackerSpend(charId, field, 1);
 
       toast(`− 1 ${label} (${current - 1}/${max})`);
