@@ -13,6 +13,7 @@ import { getFeedingCycle } from '../downtime/db.js';
 // 2026-09-01 general audit fix: was a hand-duplicated copy of api.js's
 // apiBase()/headers() — import the canonical versions instead.
 import { apiBase, headers as authHeaders } from '../data/api.js';
+import { fetchStoryFeeding } from '../data/story-feeding.js';
 const LOCAL_PREFIX = 'tm_tracker_local_';
 
 // Game 8 live finding (2026-09-19): trackerAdj/trackerSpend only ever
@@ -221,6 +222,19 @@ export function trackerToggle(charId) {
 // copy of that question. Every active character is written on each run (not just cycle spenders),
 // because a character who spent nothing in the live cycle should read full max, not whatever an
 // earlier bad reconcile left behind — the old `spent === 0` skip could subtract but never restore.
+//
+// 2026-09-19 (live, confirmed via Game 8/Game 9 tracker audit): a SECOND, more severe bug on top
+// of the above — real submissions have lived in tm_story since Game 8, but this function still
+// read `${apiBase()}/api/downtime_submissions?chapter_id=` (this repo's OWN, retired
+// tm_game.downtime_submissions) for spend. That collection has held zero rows for any Game-8+
+// cycle since the cutover, so `infSpent` was always empty and every character's Influence was
+// silently reset to full max on every tracker load — self-reinforcing, since the next load undid
+// any manual correction. Confirmed live for Game 8: 19 of 32 in-scope characters showed exactly
+// this signature. See specs/deferred-work.md, "Influence auto-reconcile is structurally broken
+// for any TM-Story-sourced cycle". Fixed by reading each character's declared spend from TM
+// Story's own cross-app route (`fetchStoryFeeding`, Story 12.3's `territory_influence` sibling
+// key — public/js/data/story-feeding.js), the same read TM Game's Feeding tab already relies on
+// for `content.feeding`, rather than the retired tm_game shape.
 export async function reconcileInfluenceDT() {
   try {
     const cycle = await getFeedingCycle();
@@ -229,23 +243,25 @@ export async function reconcileInfluenceDT() {
     const cycleId = String(cycle._id);
     if (_reconciledCycles.has(cycleId)) return;   // already run this session
 
-    const subRes = await fetch(`${apiBase()}/api/downtime_submissions?chapter_id=${cycleId}`, { headers: authHeaders() });
-    if (!subRes.ok) { return; }   // transient failure — do not mark done; next initTracker retries
-    const subs = await subRes.json();
-
-    // Build per-character spend totals (mirrors signin-tab.js loadLastCycleData)
-    const infSpent = new Map();
-    for (const sub of (subs || [])) {
-      const charId = String(sub.character_id);
-      const raw = sub.responses?.influence_spend;
-      if (!raw) continue;
-      let obj = null;
-      try { obj = JSON.parse(raw); } catch { continue; }
-      const total = Object.values(obj).reduce((s, v) => s + Math.abs(Number(v) || 0), 0);
-      if (total > 0) infSpent.set(charId, total);
-    }
-
     const chars = (suiteState.chars || []).filter(c => !c.retired);
+
+    // Per-character cross-app read (never a bulk-by-cycle one — TM Story exposes no such route,
+    // and this mirrors the Feeding tab's own established per-character pattern). A missing
+    // submission, an unreachable TM Story, or no declared territory_influence key all collapse to
+    // "no declared spend" — the same honest-absence handling `fetchStoryFeeding` already
+    // guarantees never throws.
+    const spendResults = await Promise.all(chars.map(c => fetchStoryFeeding(String(c._id), cycleId)));
+
+    const infSpent = new Map();
+    chars.forEach((c, i) => {
+      const res = spendResults[i];
+      if (!res.ok) return;
+      const spends = res.data?.territory_influence?.spends;
+      if (!Array.isArray(spends)) return;
+      const total = spends.reduce((s, sp) => s + Math.abs(Number(sp?.amount) || 0), 0);
+      if (total > 0) infSpent.set(String(c._id), total);
+    });
+
     for (const c of chars) {
       const charId = String(c._id);
       const spent = infSpent.get(charId) || 0;
