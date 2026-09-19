@@ -13,8 +13,31 @@ import { getFeedingCycle } from '../downtime/db.js';
 // 2026-09-01 general audit fix: was a hand-duplicated copy of api.js's
 // apiBase()/headers() — import the canonical versions instead.
 import { apiBase, headers as authHeaders } from '../data/api.js';
-
 const LOCAL_PREFIX = 'tm_tracker_local_';
+
+// Game 8 live finding (2026-09-19): trackerAdj/trackerSpend only ever
+// touched the in-memory cache + fired the API write. Every caller outside
+// sheet.js's own pip-tap handler (char-pools.js's quick-spend buttons,
+// roll-v2.js's manual spend row and roll-triggered Vitae/WP cost) left the
+// Sheet tab's own tap-a-pip tracker-block showing a stale value until an
+// unrelated WS round-trip (or a tab switch) happened to repaint it.
+// Centralising the repaint here, in the two functions every spend path
+// already funnels through, is the one-place fix rather than patching each
+// caller individually.
+//
+// Deliberately a DYNAMIC import, not a static one: sheet.js has its own
+// top-level `document.addEventListener(...)` calls that run immediately on
+// module evaluation, and several vitest unit suites import this file (via
+// roll-v2.js) in an environment with no real `document`. A static import
+// here pulled sheet.js's whole module body into that graph and broke them
+// at import time, before any test even ran. The guard below also means a
+// unit test that never sets `suiteState.sheetChar` (the normal case) never
+// triggers the import at all.
+async function _repaintSheetIfCurrent(charId) {
+  if (String(suiteState.sheetChar?._id) !== charId) return;
+  const { repaintSheetTrackers } = await import('../suite/sheet.js');
+  repaintSheetTrackers();
+}
 
 // In-memory cache — populated by initTracker() / ensureLoaded()
 const _cache = {};
@@ -293,6 +316,7 @@ export async function trackerSpend(charId, field, amount) {
   }).catch(() => { /* silent fail — cache remains valid, matches saveToApi's own convention */ });
 
   patchCard(charId, c, cs);
+  _repaintSheetIfCurrent(charId);
 }
 
 export async function trackerAdj(charId, field, delta) {
@@ -319,6 +343,7 @@ export async function trackerAdj(charId, field, delta) {
     cs.inf = clamp((cs.inf ?? maxInf) + delta, 0, maxInf);
     saveToApi(charId, { influence: cs.inf });
     patchCard(charId, c, cs);
+    _repaintSheetIfCurrent(charId);
     return;
   } else {
     const maxHp = calcHealth(c);
@@ -329,6 +354,7 @@ export async function trackerAdj(charId, field, delta) {
 
   saveToApi(charId, persistedFields(cs));
   patchCard(charId, c, cs);
+  _repaintSheetIfCurrent(charId);
 }
 
 export function trackerAddCondition(charId) {
