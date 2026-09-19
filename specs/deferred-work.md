@@ -2222,3 +2222,27 @@ fixture.
 **Not scoped or built beyond this entry.** All four verified real by direct code/git-history
 inspection during triage; none block storytab.5 itself, since all four are pre-existing behaviour
 storytab.5 only reused or made more visible, not new defects it introduced.
+
+## Deferred from: downtime-publishing-schema grounding, 2026-09-19 — xp_ledger (Epic XPL) still not shipped
+
+Re-confirmed live while grounding the new downtime-publishing schema's "Total XP Spent/Left Over"
+section (`TM Admin/specs/downtime-publishing-schema.md`), not a new discovery — `epic-xpl-xp-ledger.md`
+already recorded this status; this entry exists so it surfaces as real outstanding work rather than
+staying buried in a single epic doc.
+
+- **`xpl.1` (the write hook + ST read view) is marked "done" but sits on an unpushed, unmerged,
+  undeployed branch**: `ms/xpl-1-xp-ledger-write-hook`. Code-reviewed (internal 3-layer, 2 real High
+  findings fixed, 136/136 regression green) but never shipped. A real, dated, per-spend audit trail
+  (who bought what, when, on whose authority) exists in code and has never once fired in production.
+- **`xpl.2` (historic reconciliation, DT1-DT6 backfill) is only `ready-for-dev`** — investigated and
+  scoped (confirmed-only policy: never write a ledger row unless the character's current live state
+  demonstrably matches the historic request; everything else goes to a manual-review report), never
+  built.
+- Real motivating incident behind the whole epic (a downtime-purchased Majesty 4 dot silently failing
+  to write, patched by hand with zero trace) is exactly the class of thing this would have caught, and
+  still isn't caught today.
+
+**Not scoped or built beyond this entry.** Whoever picks this up: push/merge/deploy `xpl.1` first
+(xpl.2 depends on the collection existing live), then build `xpl.2`'s already-scoped confirmed-only
+backfill. Re-verify both branches' current state before assuming this description is still accurate —
+dated 2026-09-19.

@@ -346,6 +346,9 @@ export function renderCharPools(el, char, onTap) {
       if (current <= 0) { toast(`No ${label} left to spend`); return; }
 
       const role = getRole();
+      // trackerAdj/trackerSpend (game/tracker.js) repaint the Sheet tab's own
+      // tap-a-pip tracker-block themselves when this character is the one
+      // currently loaded there — no separate repaint call needed here.
       if (role === 'st' || role === 'dev') trackerAdj(charId, field, -1);
       else trackerSpend(charId, field, 1);
 
