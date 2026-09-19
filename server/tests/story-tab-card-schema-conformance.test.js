@@ -29,6 +29,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { renderOutcomeWithCards } from '../../public/js/tabs/story-tab.js';
+// The cross-app adapter every Game 8-onward cycle reaches this renderer through.
+import { adaptStoryReport } from '../lib/story-downtime-fetch.js';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..');
 
@@ -365,5 +367,89 @@ describe('tm-admin.21.1: a withheld project still shows no declared lines', () =
     expect(html).not.toContain('Desired Outcome:');
     expect(html).not.toContain('Approach:');
     expect(quoteOf(html)).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tm-admin.21.1 follow-up (the HIGH deferred item): the same ruled card schema,
+// exercised through the CROSS-APP path rather than a native tm_game submission.
+//
+// Every cycle from Game 8 onward reaches this renderer via
+// server/lib/story-downtime-fetch.js's adapter, not out of tm_game's own
+// downtime_submissions (frozen since Game 7). The adapter used to map only
+// `title`/`action` off TM Story's declared project slots, so the ruled
+// `Desired Outcome:`/`Approach:` lines rendered correctly for Games 2-7 and
+// silently blank for everything current. Opening an old report "proved" the
+// feature worked; these tests close that trap by driving the real adapter.
+// ---------------------------------------------------------------------------
+describe('tm-admin.21.1 follow-up: a TM-Story-sourced submission renders the ruled declared lines too', () => {
+  // Shaped exactly as TM Story's own SLOT_SPECS emits a projects entry
+  // (TM Story/server/routes/downtimes.js, the `projects` spec:
+  // action/title/description/outcome, `slot` being the 1-based array position).
+  const STORY_REPORT = {
+    cycle_id: 'cyc-game8',
+    narrative: 'The books balanced, eventually.',
+    projects: [{
+      slot: 1,
+      action: 'investigate',
+      title: 'The Quiet Ledger',
+      description: 'Quietly, through the counting house clerks.',
+      outcome: 'Find out who has been skimming the tithe.',
+    }],
+    // TM Story sends the pool as a deep-allowlisted `{expression, total}` object rather than
+    // tm_game's own flat `pool_validated` string; this renderer already reads either.
+    projects_resolved: [{
+      action_type: 'investigate',
+      outcome_confirmed: true,
+      outcome: 'The ledger gave up three names.',
+      pool: { expression: 'Intelligence + Investigation' },
+      roll: { successes: 2, exceptional: false, dice_string: '1, 3, 8, 3, 8, 6' },
+    }],
+  };
+
+  const quote = quoteOf(renderOutcomeWithCards(adaptStoryReport(STORY_REPORT, 'charA', 0)));
+
+  it('renders all four ruled lines, in the ruled order, from real TM-Story-shaped data', () => {
+    expect(quote).not.toBeNull();
+    const iSuc      = quote.indexOf('Results: 2 Successes');
+    const iDice     = quote.indexOf('Results: 1, 3, 8, 3, 8, 6');
+    const iDesired  = quote.indexOf('Desired Outcome:');
+    const iApproach = quote.indexOf('Approach:');
+    expect(iSuc).toBeGreaterThan(-1);
+    expect(iSuc).toBeLessThan(iDice);
+    expect(iDice).toBeLessThan(iDesired);
+    expect(iDesired).toBeLessThan(iApproach);
+  });
+
+  it('maps TM Story\'s `outcome` to Desired Outcome and its `description` to Approach, not the other way round', () => {
+    expect(quote).toMatch(/Desired Outcome:<\/span> Find out who has been skimming the tithe\./);
+    expect(quote).toMatch(/Approach:<\/span> Quietly, through the counting house clerks\./);
+  });
+
+  it('gives both cross-app declared lines the same muted treatment a native submission gets', () => {
+    expect(quote.match(/class="proj-card-declared"/g)).toHaveLength(2);
+    expect(quote.match(/class="proj-card-declared-label"/g)).toHaveLength(2);
+  });
+
+  it('renders exactly what the equivalent native tm_game submission renders (no second shape)', () => {
+    const adapted = renderOutcomeWithCards(adaptStoryReport(STORY_REPORT, 'charA', 0));
+    const native  = renderOutcomeWithCards(projectSub({
+      roll: { successes: 2, exceptional: false, dice_string: '1, 3, 8, 3, 8, 6' },
+      desired: 'Find out who has been skimming the tithe.',
+      approach: 'Quietly, through the counting house clerks.',
+    }));
+    const strip = (h) => h.replace(/data-sub-id="[^"]*"/g, '');
+    expect(strip(adapted)).toBe(strip(native));
+  });
+
+  it('renders only whichever declared field TM Story actually carried, never an empty row', () => {
+    // TM Story's own `filled()` gate omits a blank field from the slot entirely, so a
+    // player who filled in only one has only one key on the slot.
+    const onlyApproach = quoteOf(renderOutcomeWithCards(adaptStoryReport({
+      ...STORY_REPORT,
+      projects: [{ slot: 1, action: 'investigate', title: 'The Quiet Ledger', description: 'Quietly, through the clerks.' }],
+    }, 'charA', 0)));
+    expect(onlyApproach).toContain('Approach:');
+    expect(onlyApproach).not.toContain('Desired Outcome:');
   });
 });

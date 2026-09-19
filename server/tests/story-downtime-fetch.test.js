@@ -116,6 +116,40 @@ describe('adaptStoryReport', () => {
     expect(sub.responses.project_1_action).toBe('investigate');
   });
 
+  // tm-admin.21.1 follow-up: the card schema's ruled `Desired Outcome:`/`Approach:` lines read
+  // `project_{n}_outcome`/`project_{n}_description`. Mapping only title/action left those two
+  // lines blank on every TM-Story-sourced cycle (Game 8 onward), while Games 2-7 rendered fine.
+  it('maps TM Story\'s declared outcome/description onto project_{n}_outcome/_description (the ruled Desired Outcome/Approach lines)', () => {
+    const sub = adaptStoryReport(RICH_REPORT, 'charA', 0);
+    expect(sub.responses.project_1_outcome).toBe('Found the safehouse');
+    expect(sub.responses.project_1_description).toBe('Follow the courier');
+  });
+
+  it('keeps each declared key on its own slot number, never collapsing multi-project reports onto one', () => {
+    const sub = adaptStoryReport({
+      cycle_id: 'cyc-multi',
+      projects: [
+        { slot: 1, title: 'First', description: 'First approach', outcome: 'First aim' },
+        { slot: 3, title: 'Third', description: 'Third approach', outcome: 'Third aim' },
+      ],
+    }, 'charA', 0);
+    expect(sub.responses.project_1_outcome).toBe('First aim');
+    expect(sub.responses.project_1_description).toBe('First approach');
+    expect(sub.responses.project_3_outcome).toBe('Third aim');
+    expect(sub.responses.project_3_description).toBe('Third approach');
+    expect(sub.responses).not.toHaveProperty('project_2_outcome');
+    expect(sub.responses).not.toHaveProperty('project_2_description');
+  });
+
+  it('omits a declared key entirely when TM Story\'s own filled() gate left that field off the slot, never a blank value', () => {
+    const sub = adaptStoryReport({
+      cycle_id: 'cyc-partial',
+      projects: [{ slot: 1, action: 'investigate', title: 'Track the Ordo cell', description: 'Follow the courier' }],
+    }, 'charA', 0);
+    expect(sub.responses.project_1_description).toBe('Follow the courier');
+    expect(sub.responses).not.toHaveProperty('project_1_outcome');
+  });
+
   it('maps narrative -> published_outcome, and carries resolved-action arrays through unchanged (already allowlisted upstream by TM Story\'s own 74.1)', () => {
     const sub = adaptStoryReport(RICH_REPORT, 'charA', 0);
     expect(sub.published_outcome).toBe('Ambrose consolidated his holdings.');
