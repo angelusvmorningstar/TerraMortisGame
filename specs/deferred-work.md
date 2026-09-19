@@ -2293,3 +2293,34 @@ being recorded here — not speculation. Commit `83812feb` on branch `tm-admin/2
 
 **Not scoped or built beyond this entry** except the HIGH item's adapter fix, which is two lines
 once ruled. Re-verify against live code before assuming still accurate — dated 2026-09-19.
+
+## Deferred from: Game 8/Game 9 tracker audit, 2026-09-19 — Influence auto-reconcile is structurally broken for any TM-Story-sourced cycle
+
+**HIGH — confirmed live, not speculation.** `reconcileInfluenceDT()`
+(`public/js/game/tracker.js:224-264`) runs automatically on every tracker tab load
+(`initTracker()`, `:266-275`) and is meant to recompute each character's live Influence as
+`calcTotalInfluence(c) - declaredSpendThisCycle`. It fetches
+`${apiBase()}/api/downtime_submissions?chapter_id=${cycleId}` and reads each doc's
+`responses.influence_spend` — the OLD flat `tm_game`-native submission shape. That route
+(`server/routes/downtime.js:381-408`) queries `getCollection('downtime_submissions')` →
+`server/db.js`'s single `tm_game` connection only — there is no `tm_story` bridge on this route.
+
+Since Game 8, real submissions live in `tm_story`, so `tm_game.downtime_submissions` has **zero**
+rows for any cycle from Game 8 onward (confirmed live for Game 8's `chapter_id`). The result:
+`infSpent` is always an empty map, `spent` is always 0, and `reconcileInfluenceDT()` silently writes
+`cs.inf = calcTotalInfluence(c)` (full max) back to every character's tracker via `saveToApi`,
+**every single time anyone opens the tracker tab**, overwriting whatever real spend was there. This
+is self-reinforcing, not a one-time bad value — a manual correction to any character's Influence gets
+undone the next time the tracker loads. Confirmed live for Game 8: 19 of 32 in-scope characters
+showed exactly this signature (tracker sitting at full max regardless of real declared spend).
+
+**Fix**: repoint the fetch (or the underlying route) at `tm_story`'s real submission data for the
+live cycle, reading whatever field TM Story's native schema actually uses for declared territory
+spend (`content.territory_influence.spends[]`, summed by absolute value per the project's own sign
+convention — NOT `responses.influence_spend`, which doesn't exist on TM-Story-native submissions at
+all). This is the same class of gap `reconcileInfluenceDT`'s own `:213-223` comment describes fixing
+once before (a 2026-08-15 incident, wrong-cycle-not-wrong-database that time) — worth reading that
+comment's history before touching this function again.
+
+**Not scoped or built beyond this entry.** Re-verify against live code before assuming still
+accurate.
