@@ -471,6 +471,15 @@ export function renderOutcomeWithCards(sub, opts = {}) {
   const cardLookup = {};
   const responses  = sub.st_narrative?.project_responses || [];
   const resolved   = sub.projects_resolved || [];
+  // storytab.1 positional-mispairing fix, 2026-09-19: `projects_resolved` is
+  // `projectResolvedList()`'s OUTPUT (TM Story's own server/routes/downtimes.js), which drops any
+  // null/unconfirmed entry and tags each survivor with its real declared slot number (`.slot`,
+  // 1-indexed) specifically so a caller can re-pair correctly after compaction. Indexing this array
+  // by raw loop position instead silently paired an unconfirmed project's own withheld slot with
+  // the NEXT confirmed project's real roll data — e.g. a character with an unrolled "XP Spend" in
+  // slot 1 showed slot 2's Results under slot 1's card, slot 3's under slot 2's, and so on. Pair by
+  // the tag, not position.
+  const resolvedBySlot = new Map(resolved.map((r, idx) => [r.slot ?? (idx + 1), r]));
   const unmatched  = [];
 
   for (let i = 0; i < 4; i++) {
@@ -478,7 +487,7 @@ export function renderOutcomeWithCards(sub, opts = {}) {
     const title = sub.responses?.[`project_${n}_title`] || sub[`project_${n}_title`];
     if (!title) continue;
 
-    const rev      = resolved[i] || {};
+    const rev      = resolvedBySlot.get(n) || {};
     // fix.916: DT Processing writes approved project outcomes to projects_resolved[i].outcome
     // (+ outcome_confirmed), not to st_narrative.project_responses. Treat a confirmed outcome
     // as recorded so the project shows its card instead of "Project withheld". An existing
@@ -630,6 +639,10 @@ const _MERIT_CAT_LABELS = {
 function renderMeritSummarySection(sub) {
   const actions  = buildPlayerMeritActions(sub);
   const resolved = sub.merit_actions_resolved || [];
+  // Same storytab.1 positional-mispairing fix as renderOutcomeWithCards above: pair by each
+  // resolved entry's own `.slot` tag, not raw array position, since projectResolvedList() compacts
+  // out unconfirmed/null entries before this array reaches the client.
+  const resolvedBySlot = new Map(resolved.map((r, idx) => [r.slot ?? (idx + 1), r]));
 
   const acqRes = sub.acquisitions_resolved || [];
 
@@ -644,7 +657,7 @@ function renderMeritSummarySection(sub) {
   // Group by category — only show entries with a recorded outcome
   const groups = {};
   actions.forEach((a, i) => {
-    const rev = resolved[i] || {};
+    const rev = resolvedBySlot.get(i + 1) || {};
     if (rev.pool_status === 'skipped') return;
     // Acquisitions resolve to two fixed slots: Resources -> [0], Skill Acquisition -> [1]
     // (downtime-views.js:3578/3599), separate from merit_actions_resolved[i]. Read both
@@ -784,8 +797,10 @@ function renderMeritActionCards(sub) {
   if (!actions.length) return '';
 
   const resolved = sub.merit_actions_resolved || [];
+  // Same storytab.1 positional-mispairing fix — pair by `.slot`, not raw array position.
+  const resolvedBySlot = new Map(resolved.map((r, idx) => [r.slot ?? (idx + 1), r]));
   const cards = actions
-    .map((a, i) => ({ a, rev: resolved[i] || {} }))
+    .map((a, i) => ({ a, rev: resolvedBySlot.get(i + 1) || {} }))
     .filter(({ rev }) => rev.pool || rev.pool_validated || rev.roll);
 
   if (!cards.length) return '';
