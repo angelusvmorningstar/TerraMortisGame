@@ -479,7 +479,7 @@ export function renderOutcomeWithCards(sub, opts = {}) {
   // the NEXT confirmed project's real roll data — e.g. a character with an unrolled "XP Spend" in
   // slot 1 showed slot 2's Results under slot 1's card, slot 3's under slot 2's, and so on. Pair by
   // the tag, not position.
-  const resolvedBySlot = new Map(resolved.map((r, idx) => [r.slot ?? (idx + 1), r]));
+  const resolvedBySlot = new Map(resolved.map((r, idx) => [r?.slot ?? (idx + 1), r]));
   const unmatched  = [];
 
   for (let i = 0; i < 4; i++) {
@@ -642,7 +642,7 @@ function renderMeritSummarySection(sub) {
   // Same storytab.1 positional-mispairing fix as renderOutcomeWithCards above: pair by each
   // resolved entry's own `.slot` tag, not raw array position, since projectResolvedList() compacts
   // out unconfirmed/null entries before this array reaches the client.
-  const resolvedBySlot = new Map(resolved.map((r, idx) => [r.slot ?? (idx + 1), r]));
+  const resolvedBySlot = new Map(resolved.map((r, idx) => [r?.slot ?? (idx + 1), r]));
 
   const acqRes = sub.acquisitions_resolved || [];
 
@@ -798,7 +798,7 @@ function renderMeritActionCards(sub) {
 
   const resolved = sub.merit_actions_resolved || [];
   // Same storytab.1 positional-mispairing fix — pair by `.slot`, not raw array position.
-  const resolvedBySlot = new Map(resolved.map((r, idx) => [r.slot ?? (idx + 1), r]));
+  const resolvedBySlot = new Map(resolved.map((r, idx) => [r?.slot ?? (idx + 1), r]));
   const cards = actions
     .map((a, i) => ({ a, rev: resolvedBySlot.get(i + 1) || {} }))
     .filter(({ rev }) => rev.pool || rev.pool_validated || rev.roll);
