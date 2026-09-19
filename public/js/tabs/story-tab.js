@@ -417,9 +417,51 @@ function renderRumoursSection(sub, opts = {}) {
 }
 
 /**
+ * Build the ruled per-action card blockquote: Results (successes), Results (the
+ * dice), Desired Outcome, Approach, in that order, all inside ONE blockquote.
+ * The two Results lines appear only when a dice roll actually happened, and each
+ * declared line only when the player actually filled it in. Shared by the Project
+ * card loop and renderMeritActionCards so the two cannot drift apart.
+ * Ruling: ../TM Admin/specs/downtime-publishing-schema.md, "Per-action card schema".
+ */
+function _renderCardQuote(rev, declared = {}) {
+  const lines = [];
+
+  // "Only if a dice roll happened": an action flagged no_roll did not roll, so stale roll data
+  // left on it must not surface as a Results line. The pool line beside this one has always
+  // honoured no_roll; the roll block did not, which rendered Results with no Pool above it.
+  // TM Story's own half of this conformance work (tm-admin.21.2) gates the same way.
+  if (rev?.roll && !rev.no_roll) {
+    const suc   = rev.roll.successes ?? 0;
+    const exc   = rev.roll.exceptional;
+    const label = exc ? 'Exceptional Success' : suc === 0 ? 'Failure' : `${suc} Success${suc !== 1 ? 'es' : ''}`;
+    const cls   = exc ? ' proj-card-roll-exc' : suc === 0 ? ' proj-card-roll-fail' : '';
+    lines.push(`<div class="proj-card-roll${cls}">Results: ${esc(label)}</div>`);
+    if (rev.roll.dice_string) lines.push(`<div class="proj-card-dice">Results: ${esc(rev.roll.dice_string)}</div>`);
+  }
+
+  // Player-submitted, so muted: this is what they asked for and how they said
+  // they would go about it, not what actually happened.
+  // String() first: a merit's description is lifted raw out of sub._raw, and a project's
+  // declared fields fall back to arbitrary top-level document fields, so a non-string value
+  // is reachable. A bare .trim() would throw and blank the whole narrative panel, not just
+  // the one line. esc() coerces the same way on the way out.
+  const desired  = String(declared.desired  ?? '').trim();
+  const approach = String(declared.approach ?? '').trim();
+  if (desired)  lines.push(`<div class="proj-card-declared"><span class="proj-card-declared-label">Desired Outcome:</span> ${esc(desired)}</div>`);
+  if (approach) lines.push(`<div class="proj-card-declared"><span class="proj-card-declared-label">Approach:</span> ${esc(approach)}</div>`);
+
+  if (!lines.length) return '';
+  return `<blockquote class="proj-card-quote">${lines.join('')}</blockquote>`;
+}
+
+/**
  * Render the published narrative with project cards injected immediately
  * after their matching section heading. Unmatched cards and merit action
  * cards are appended at the bottom.
+ *
+ * Each project card must conform to the per-action card schema ruled in
+ * ../TM Admin/specs/downtime-publishing-schema.md ("Per-action card schema").
  */
 export function renderOutcomeWithCards(sub, opts = {}) {
   const { editable = false } = opts;
@@ -445,6 +487,9 @@ export function renderOutcomeWithCards(sub, opts = {}) {
     const resp     = responses[i]?.response?.trim() || confirmedOutcome;
     const actType  = rev.action_type || sub.responses?.[`project_${n}_action`] || sub[`project_${n}_action`] || '';
     const typeLabel = ACTION_TYPE_LABELS[actType] || actType;
+    // Player-declared fields, same submission-shape fallback as the title lookup above.
+    const declOutcome = sub.responses?.[`project_${n}_outcome`] || sub[`project_${n}_outcome`] || '';
+    const declApproach = sub.responses?.[`project_${n}_description`] || sub[`project_${n}_description`] || '';
 
     let cardHtml;
     if (!resp) {
@@ -465,14 +510,7 @@ export function renderOutcomeWithCards(sub, opts = {}) {
         cardHtml += `<div class="proj-card-pool"><span class="proj-card-pool-label">Pool</span> <span class="proj-card-pool-val">${esc(poolExpr)}</span></div>`;
       }
 
-      if (rev.roll) {
-        const suc = rev.roll.successes ?? 0;
-        const exc = rev.roll.exceptional;
-        const label = exc ? 'Exceptional Success' : suc === 0 ? 'Failure' : `${suc} Success${suc !== 1 ? 'es' : ''}`;
-        const cls   = exc ? ' proj-card-roll-exc' : suc === 0 ? ' proj-card-roll-fail' : '';
-        cardHtml += `<div class="proj-card-roll${cls}">${esc(label)}</div>`;
-        if (rev.roll.dice_string) cardHtml += `<div class="proj-card-dice">${esc(rev.roll.dice_string)}</div>`;
-      }
+      cardHtml += _renderCardQuote(rev, { desired: declOutcome, approach: declApproach });
 
       const note = rev.player_facing_note || '';
       if (note) cardHtml += `<div class="proj-card-feedback"><h4 class="proj-card-feedback-label">ST Note</h4><em>${esc(note)}</em></div>`;
@@ -734,6 +772,13 @@ function buildPlayerMeritActions(sub) {
   return actions;
 }
 
+/**
+ * Each merit card must conform to the per-action card schema ruled in
+ * ../TM Admin/specs/downtime-publishing-schema.md ("Per-action card schema").
+ * A merit action carries exactly one player-declared string, so it renders a
+ * "Desired Outcome" line and never an "Approach" line, uniformly across every
+ * lane (ruled, 2026-09-19).
+ */
 function renderMeritActionCards(sub) {
   const actions  = buildPlayerMeritActions(sub);
   if (!actions.length) return '';
@@ -760,16 +805,7 @@ function renderMeritActionCards(sub) {
     const poolExpr = rev.pool?.expression || rev.pool_validated || (rev.pool?.total ? String(rev.pool.total) : '');
     if (poolExpr) h += `<div class="proj-card-pool"><span class="proj-card-pool-label">Pool</span> <span class="proj-card-pool-val">${esc(poolExpr)}</span></div>`;
 
-    if (rev.roll) {
-      const suc = rev.roll.successes ?? 0;
-      const exc = rev.roll.exceptional;
-      const label = exc ? 'Exceptional Success'
-        : suc === 0 ? 'Failure'
-        : `${suc} Success${suc !== 1 ? 'es' : ''}`;
-      const cls = exc ? ' proj-card-roll-exc' : suc === 0 ? ' proj-card-roll-fail' : '';
-      h += `<div class="proj-card-roll${cls}">${esc(label)}</div>`;
-      if (rev.roll.dice_string) h += `<div class="proj-card-dice">${esc(rev.roll.dice_string)}</div>`;
-    }
+    h += _renderCardQuote(rev, { desired: a.description });
 
     const note = rev.player_facing_note || '';
     if (note) {

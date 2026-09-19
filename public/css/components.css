@@ -4766,6 +4766,37 @@ html:not([data-theme="dark"]) .sk-spec-row  span { color: var(--crim) !important
 }
 .proj-card-roll-exc { border-color: var(--gold2); color: var(--gold2); background: transparent; }
 .proj-card-roll-fail { border-color: var(--crim); color: var(--crim); background: transparent; }
+/* Per-action card blockquote, ruled in ../TM Admin/specs/downtime-publishing-schema.md:
+   the two Results lines then the player's own declared lines, all in one quote.
+   Scoped to .proj-card deliberately: the Archive tab renders these cards inside
+   .reading-pane, whose generic `.reading-pane blockquote` rule above would otherwise
+   out-specify a bare `.proj-card-quote` and repaint the quote (crimson rule, tinted
+   background, italics on the Results lines). Every property that rule sets is restated
+   here, so one card looks the same on all three surfaces that render it. */
+.proj-card .proj-card-quote {
+  margin: 10px 0 0;
+  padding: 0 0 0 10px;
+  border-left: 2px solid var(--bdr2);
+  background: none;
+  color: inherit;
+  font-style: normal;
+}
+.proj-card .proj-card-quote > :first-child { margin-top: 0; }
+.proj-card-declared {
+  font-size:0.75rem;
+  color: var(--txt3);
+  line-height: 1.5;
+  font-style: italic;
+  margin-top: 4px;
+}
+.proj-card-declared-label {
+  font-family: var(--fl);
+  font-size:var(--fs-floor-micro);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--txt2);
+  font-style: normal;
+}
 .proj-card-feedback {
   margin-top: 10px;
   padding-top: 10px;
