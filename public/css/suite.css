@@ -934,6 +934,13 @@ body.desktop-mode .sh-powers-grid > .sh-sec{break-inside:avoid;}
 .gcp-stat:last-child{border-right:none;}
 .gcp-stat-v{font-family:var(--fl);font-size:1.25rem;color:var(--gold2);line-height:1;}
 .gcp-stat-l{font-family:var(--fl);font-size:var(--fs-floor-micro);letter-spacing:.08em;text-transform:uppercase;color:var(--txt3);margin-top:3px;text-align:center;}
+/* Game 8 live request — quick Vitae/WP spend, duplicating sheet.js's own
+   tap-a-pip tracker as a fast, always-visible pair of buttons right under
+   the derived-stats strip so it doesn't have to be hunted for mid-scene. */
+.gcp-quick-spend{display:flex;gap:8px;margin-bottom:12px;}
+.gcp-spend-btn{all:unset;box-sizing:border-box;flex:1;cursor:pointer;text-align:center;display:flex;align-items:center;justify-content:center;min-height:var(--control-height-sm);border-radius:var(--radius-sm);border:1px solid var(--bdr3);background:var(--surf);color:var(--accent);font-family:var(--fl);font-size:var(--fs-floor-body);font-weight:var(--type-weight-strong);letter-spacing:.02em;-webkit-tap-highlight-color:transparent;}
+.gcp-spend-btn:active{background:color-mix(in srgb, var(--accent) 8%, transparent);border-color:var(--accent);}
+.gcp-spend-btn:focus-visible{outline:2px solid var(--accent);outline-offset:2px;}
 /* rcv.2 — Skills / Disciplines / Special as three independent accordions,
    ported from the recovered roller mockup's own picker sections
    (scratchpad/roller-live-recovered/public/app.css:160-179) with this file's

@@ -12,6 +12,14 @@ import { defenceForDisplay } from '../data/equipment-derivation.js';
 import { getPool } from '../shared/pools.js';
 import { getRulesByCategory } from '../data/loader.js';
 import { esc } from '../data/helpers.js';
+// Game 8 live request: a fast, always-visible spend action next to the
+// derived-stats strip, so a player never has to hunt the Sheet tab's
+// tap-a-pip tracker mid-scene. Mirrors public/js/suite/sheet.js's own
+// tracker click-handler gating (player = self-spend only, ST/dev = free
+// adjust) rather than inventing a second spend path.
+import { trackerRead, trackerSpend, trackerAdj } from './tracker.js';
+import { getRole } from '../auth/discord.js';
+import { toast } from '../suite/toast.js';
 
 // Primary attribute for each skill (most common pool pairing)
 const SKILL_ATTR = {
@@ -102,6 +110,17 @@ export function renderCharPools(el, char, onTap) {
   h += statChip('Vitae Max', vitae);
   h += statChip('Speed',     speed);
   h += '</div>';
+
+  // ── Quick spend (Game 8 live request) ──
+  // Duplicate, fast-access controls for the same self-service Vitae/WP spend
+  // the Sheet tab's tap-a-pip tracker already does — this row just makes it
+  // discoverable without hunting for it. Always rendered (both roles use it:
+  // player = self-spend, ST/dev = free adjust, same split as sheet.js's own
+  // tracker click-handler).
+  h += '<div class="gcp-quick-spend">'
+     + '<button class="gcp-spend-btn" type="button" data-spend="vitae">− 1 Vitae</button>'
+     + '<button class="gcp-spend-btn" type="button" data-spend="wp">− 1 WP</button>'
+     + '</div>';
 
   // ── Vampire Mechanics (gdx-11, #981) ──
   // Originally gated behind the tm-use-new-dice-roller flag (v1's roll.js
@@ -309,6 +328,29 @@ export function renderCharPools(el, char, onTap) {
     // submitAction handling disable the tile immediately to prevent a
     // double-submit, without char-pools.js itself making any network call.
     btn.addEventListener('click', () => onTap(pools[idx], btn));
+  });
+
+  // Quick-spend row: same self-service gating as sheet.js's own tracker
+  // click-handler (player = decrease-only via trackerSpend, ST/dev = free
+  // adjust via trackerAdj) — no new server path, just a more visible entry
+  // point onto the existing one.
+  const charId = String(char._id);
+  el.querySelectorAll('.gcp-spend-btn').forEach(btn => {
+    btn.addEventListener('click', () => {
+      const kind    = btn.dataset.spend; // 'vitae' | 'wp'
+      const field   = kind === 'vitae' ? 'vitae' : 'willpower';
+      const label   = kind === 'vitae' ? 'Vitae' : 'Willpower';
+      const max     = kind === 'vitae' ? vitae : wp;
+      const cs      = trackerRead(charId) || {};
+      const current = field === 'vitae' ? (cs.vitae ?? 0) : (cs.willpower ?? 0);
+      if (current <= 0) { toast(`No ${label} left to spend`); return; }
+
+      const role = getRole();
+      if (role === 'st' || role === 'dev') trackerAdj(charId, field, -1);
+      else trackerSpend(charId, field, 1);
+
+      toast(`− 1 ${label} (${current - 1}/${max})`);
+    });
   });
 
   // rcv.2: per-section toggle-in-place. Deliberately NOT a full
