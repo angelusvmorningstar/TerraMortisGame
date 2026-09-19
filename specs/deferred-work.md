@@ -2246,3 +2246,50 @@ staying buried in a single epic doc.
 (xpl.2 depends on the collection existing live), then build `xpl.2`'s already-scoped confirmed-only
 backfill. Re-verify both branches' current state before assuming this description is still accurate —
 dated 2026-09-19.
+
+## Deferred from: tm-admin.21.1 (story-tab.js card schema conformance), 2026-09-19
+
+Found during that story's own 3-layer code review, each verified against real code/live data before
+being recorded here — not speculation. Commit `83812feb` on branch `tm-admin/21.1-card-schema-tm-game`
+(worktree only, not pushed/merged). Full story record:
+`TM Admin/specs/stories/tm-admin.21.1...story.md`.
+
+- **HIGH — the story's own feature is inert on every cycle from Game 8 onward.**
+  `server/lib/story-downtime-fetch.js:77-85` (`projectResponsesFromDeclaredSlots`) maps only `title`
+  and `action` from a TM-Story-sourced submission — never `description`/`outcome`, even though TM
+  Story's own `SLOT_SPECS` (`TM Story/server/routes/downtimes.js:91`) exposes both. Games 2-7
+  (tm_game-sourced) render the new Desired Outcome/Approach lines correctly; Game 8 onward renders
+  neither. **The trap: opening an old (Game 2-7) report "proves" the feature works** — it silently
+  doesn't for anything current. Fix is two lines in that adapter, but it's a player-visible content
+  decision (surfacing TM Story text in TM Game for the first time) the story didn't name, so it
+  wasn't made unilaterally. Needs a ruling, then a two-line fix.
+- **MEDIUM — the ruled Merit card shape may not reach the live merit surface at all.**
+  `renderMeritSummarySection` (`story-tab.js:628-634`) only falls through to the newly-conforming
+  `renderMeritActionCards` when NO resolved action carries `outcome_summary`/`outcome`; otherwise it
+  renders a separate grouped-ledger path (`:675`) with the declared text shown bare, no label, no
+  blockquote, no ruled order. This is code inference, not confirmed against live data yet — one
+  Mongo probe of Game 8's published merit resolutions would settle whether real data actually routes
+  through the fixed path or the untouched one.
+- **MEDIUM — `projects_resolved` positional mispairing for TM-Story-sourced submissions.**
+  `story-tab.js:473` indexes positionally; TM Story's `projectResolvedList`
+  (`TM Story/server/routes/downtimes.js:223-235`) compacts the array and tags survivors with a
+  `slot` this file ignores — an unconfirmed project can show a different project's roll. Pre-existing
+  (storytab.1), made more visible now that declared intent is stapled into the same quote. Probably
+  belongs with 21.2's TM-Story-side work rather than here.
+- **MEDIUM — `attack` project actions render a machine token as prose.** `downtime-form.js:5879-5889`
+  persists the bare lowercase radio value (`destroy`/`degrade`/`disrupt`); a player now sees
+  `Desired Outcome: destroy` verbatim. Needs a label map.
+- **MEDIUM — raw dice notation now carries an authoritative "Results:" label.** `roller.js:30`
+  encodes a rolled 10 as `0` in `dice_string` (e.g. `[1,3,5,0>9>4,5]`); every ST-side surface already
+  runs this through a private formatter (`downtime-views.js:6982-6993`, `_formatDiceString`) to get
+  `[1,3,5,10!,9!,4,5]` first. Pre-existing content, newly given a prominent label. Porting that
+  formatter out of the admin module is real work, not done here.
+- **LOW — Rote Hunt slots mislabel under Approach.** `downtime-form.js:728-731` overwrites
+  `project_N_description` with the rote hunt's own textarea text, so it now renders under
+  `Approach:` instead of anything hunt-specific.
+- **LOW — `exceptional: true` with `successes: 0` renders "Exceptional Success" in gold and
+  suppresses the failure branch entirely.** Pre-existing branch order; worth an explicit ruling
+  rather than leaving implicit now that it's more visible.
+
+**Not scoped or built beyond this entry** except the HIGH item's adapter fix, which is two lines
+once ruled. Re-verify against live code before assuming still accurate — dated 2026-09-19.
