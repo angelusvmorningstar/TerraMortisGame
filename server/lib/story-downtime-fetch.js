@@ -63,8 +63,10 @@ export async function fetchStoryDowntimes({ authorization, characterId }) {
 // Declared-slot arrays (TM Story's `report.projects[]`/`.spheres[]`, each `{slot, action,
 // title, description, outcome}`) map to this repo's own flat `sub.responses.project_{n}_*`
 // naming. Only `projects` feeds `renderOutcomeWithCards()`'s own card-building loop
-// (story-tab.js:394-397 iterates n=1..4 reading `project_{n}_title`/`project_{n}_action`
-// only), `spheres`/`contacts`/`retainers` are intentionally NOT mapped here: they only
+// (which iterates n=1..4 reading `project_{n}_title`/`project_{n}_action` plus, since
+// tm-admin.21.1's ruled per-action card schema, `project_{n}_outcome` (the player's
+// Desired Outcome) and `project_{n}_description` (their Approach)),
+// `spheres`/`contacts`/`retainers` are intentionally NOT mapped here: they only
 // matter to the LEGACY per-action merit-card fallback (`renderMeritActionCards`), which
 // only runs when NO resolved action carries `outcome_summary`/`outcome` at all. Story
 // 74.1 was built specifically so `outcome_summary` IS populated, keeping TM-Story-sourced
@@ -80,6 +82,17 @@ function projectResponsesFromDeclaredSlots(projects) {
     if (p?.slot == null) continue;
     if (p.title != null) responses[`project_${p.slot}_title`] = p.title;
     if (p.action != null) responses[`project_${p.slot}_action`] = p.action;
+    // tm-admin.21.1 follow-up: the player's own declared intent, mapped onto the two flat
+    // keys the card renderer already reads for the ruled `Desired Outcome:`/`Approach:`
+    // lines. TM Story's own SLOT_SPECS (TM Story/server/routes/downtimes.js, the `projects`
+    // spec) already exposes both under these names, and its `filled()` gate means a blank
+    // one never appears on the slot at all, so a slot the player left empty still maps to
+    // nothing here, and the renderer's own "only whichever the player actually filled in"
+    // rule is preserved rather than duplicated. Without these two, the card schema's
+    // declared lines rendered correctly for tm_game-sourced cycles (Games 2-7) and silently
+    // blank for every TM-Story-sourced one (Game 8 onward).
+    if (p.outcome != null) responses[`project_${p.slot}_outcome`] = p.outcome;
+    if (p.description != null) responses[`project_${p.slot}_description`] = p.description;
   }
   return responses;
 }
