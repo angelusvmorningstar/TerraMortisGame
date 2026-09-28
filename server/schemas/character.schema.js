@@ -486,9 +486,14 @@ export const characterSchema = {
     // instances and 630 real skill instances carrying the field were stripped from live data
     // in the same pass (dots untouched throughout - confirmed live, e.g. Charlie Ballsack's
     // Weaponry stays dots:5).
+    // Story tm-admin.10.2a (2026-09-28): `bonus` is no longer REQUIRED here, matching skillObj and
+    // discObj, which already treat it as optional. The property stays declared and
+    // `additionalProperties` is unchanged, so no live document is affected. `required` is enforced
+    // ONLY by the full schema (POST creation); every PUT uses the partial schema, which
+    // derivePartialSchema() builds with `required` stripped at every depth.
     attrObj: {
       type: 'object',
-      required: ['dots', 'bonus'],
+      required: ['dots'],
       properties: {
         dots:     { type: 'integer', minimum: 0, maximum: 10 },
         // WRITE-FROZEN (see the block above `attrObj`). Holds whatever
