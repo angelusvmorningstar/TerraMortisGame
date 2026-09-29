@@ -103,16 +103,41 @@ function getByPath(obj, path) {
   return cur;
 }
 
+/** Returns the dotted path of the OUTERMOST container this call had to create (so a caller can
+ *  undo it), or null when every parent already existed. */
 function setByPath(obj, path, value) {
+  if (!obj || typeof path !== 'string') return null;
+  const parts = path.split('.');
+  let cur = obj;
+  let created = null;
+  for (let i = 0; i < parts.length - 1; i++) {
+    const key = parts[i];
+    if (cur[key] == null || typeof cur[key] !== 'object') {
+      cur[key] = {};
+      if (created === null) created = parts.slice(0, i + 1).join('.');
+    }
+    cur = cur[key];
+  }
+  cur[parts[parts.length - 1]] = value;
+  return created;
+}
+
+/** Delete the leaf at `path` without materialising anything on the way. No-op when a parent is missing. */
+function deleteByPath(obj, path) {
   if (!obj || typeof path !== 'string') return;
   const parts = path.split('.');
   let cur = obj;
   for (let i = 0; i < parts.length - 1; i++) {
-    const key = parts[i];
-    if (cur[key] == null || typeof cur[key] !== 'object') cur[key] = {};
-    cur = cur[key];
+    cur = cur[parts[i]];
+    if (cur == null || typeof cur !== 'object') return;
   }
-  cur[parts[parts.length - 1]] = value;
+  delete cur[parts[parts.length - 1]];
+}
+
+/** True for a plain object whose every value is itself an empty tree (nothing real left in it). */
+function isEmptyTree(v) {
+  if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
+  return Object.values(v).every(isEmptyTree);
 }
 
 // ── Overlay composition ────────────────────────────────────────────────
@@ -174,8 +199,12 @@ export function applyStMods(c, mods, overlayEnabled) {
     const base = typeof baseRaw === 'number' ? baseRaw : 0;
     const final = base + delta;
     c._st_mod_base[path] = baseRaw;          // preserve original (may be undefined)
-    setByPath(c, path, final);
+    const created = setByPath(c, path, final);
     c._st_mod_overlay[path] = { base, delta, final, mods: contributing };
+    // Remember a container the overlay itself materialised so stripOverlay can remove it again
+    // (tm-admin.10.2a AC13). Kept on the overlay entry, not a new top-level key: the server and
+    // export.js strip _st_mod_overlay / _st_mod_base by name, so nothing extra can reach the database.
+    if (created) c._st_mod_overlay[path].created = created;
   }
   return c;
 }
@@ -233,13 +262,24 @@ export function stripOverlay(c) {
   }
   for (const [path, baseRaw] of Object.entries(c._st_mod_base)) {
     if (baseRaw === undefined) {
-      // The path didn't exist before overlay; clear what we created.
-      // Best-effort — leaves any intermediate objects we materialised, which
-      // is fine since they're empty / will be rebuilt on next splice.
-      setByPath(c, path, undefined);
+      // The path didn't exist before overlay: delete the leaf. Assigning undefined instead would
+      // leave `{ dots: undefined }` behind, which serialises as `{}` and breaks the trait schema's
+      // required `dots` (tm-admin.10.2a AC13; Wan Yelong disciplines.Dominate, Yusuf skills.Brawl).
+      deleteByPath(c, path);
     } else {
       setByPath(c, path, baseRaw);
     }
+  }
+  // Then remove any container the overlay created, but only once nothing real is left in it.
+  const overlay = c._st_mod_overlay || {};
+  for (const entry of Object.values(overlay)) {
+    const created = entry && entry.created;
+    if (!created) continue;
+    const parts = created.split('.');
+    let parent = c;
+    for (let i = 0; i < parts.length - 1 && parent != null; i++) parent = parent[parts[i]];
+    const last = parts[parts.length - 1];
+    if (parent != null && isEmptyTree(parent[last])) delete parent[last];
   }
   delete c._st_mod_overlay;
   delete c._st_mod_base;
