@@ -37,7 +37,7 @@ export function applyBloodlineRulesFromDb(c, { grants = [] } = {}) {
       const spec = rule.target_qualifier;
       if (!skill || !spec) continue;
       if (!c.skills) c.skills = {};
-      if (!c.skills[skill]) c.skills[skill] = { dots: 0, bonus: 0, specs: [], nine_again: false };
+      if (!c.skills[skill]) c.skills[skill] = { dots: 0, specs: [], nine_again: false };
       if (!c.skills[skill].specs) c.skills[skill].specs = [];
       if (!c.skills[skill].specs.includes(spec)) c.skills[skill].specs.push(spec);
       if (!c._bloodline_free_specs) c._bloodline_free_specs = [];

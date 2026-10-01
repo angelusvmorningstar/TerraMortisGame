@@ -10,6 +10,7 @@ import { esc, clanIcon, covIcon, shortCov, cardName, displayName, sortName, reda
 import { setStatusTerritories, calcWillpowerMax, calcVitaeMax } from './data/accessors.js';
 import { ensureLoaded as loadTrackerState } from './game/tracker.js';
 import { loadStMods, applyStMods, spliceCurrent, stripOverlay, applyOverlayToAll } from './data/st-mods.js';
+import { withoutTraitBonus } from './data/strip-trait-bonus.js';
 // Issue #879 (ADR-006 D4): materialise c.derived.defence between calcDefence and
 // applyStMods so STM overlay composes on top of the armour-adjusted base.
 import { materialiseDerivedDefence } from './data/equipment-derivation.js';
@@ -979,13 +980,13 @@ async function createNewCharacter() {
     skill_priorities: {},
     attributes: Object.fromEntries(
       ['Intelligence','Wits','Resolve','Strength','Dexterity','Stamina','Presence','Manipulation','Composure']
-        .map(a => [a, { dots: 1, bonus: 0, cp: 0, xp: 0, free: 0, rule_key: null }])
+        .map(a => [a, { dots: 1, cp: 0, xp: 0, free: 0, rule_key: null }])
     ),
     skills: Object.fromEntries(
       ['Academics','Computer','Crafts','Investigation','Medicine','Occult','Politics','Science',
        'Athletics','Brawl','Drive','Firearms','Larceny','Stealth','Survival','Weaponry',
        'Animal Ken','Empathy','Expression','Intimidation','Persuasion','Socialise','Streetwise','Subterfuge']
-        .map(s => [s, { dots: 0, bonus: 0, specs: [], nine_again: false, cp: 0, xp: 0, free: 0, rule_key: null }])
+        .map(s => [s, { dots: 0, specs: [], nine_again: false, cp: 0, xp: 0, free: 0, rule_key: null }])
     ),
     disciplines: {},
     merits: [],
@@ -1054,7 +1055,11 @@ function buildSaveBody(c) {
       return cleaned;
     });
   }
-  return body;
+  // tm-admin.10.5: never forward a trait-level `bonus` (attributes, skills, disciplines, merits).
+  // It is a runtime-only overlay slot: ST Mods materialise nonzero values there in memory, and the
+  // partner cascade-save below sends characters straight from the overlaid chars[]. Copy-only; the
+  // in-memory character keeps its overlay for display.
+  return withoutTraitBonus(body);
 }
 
 async function saveCharToApi() {

@@ -561,7 +561,7 @@ export function shSetPriority(cat, val) {
 export function shEditAttrPt(attr, field, val) {
   if (state.editIdx < 0) return;
   const c = state.chars[state.editIdx];
-  if (!c.attributes[attr]) c.attributes[attr] = { dots: 0, bonus: 0, cp: 0, xp: 0, rule_key: null };
+  if (!c.attributes[attr]) c.attributes[attr] = { dots: 0, cp: 0, xp: 0, rule_key: null };
   const ao = c.attributes[attr];
   if (ao.cp === undefined) ao.cp = 0;
   if (ao.xp === undefined) ao.xp = 0;
@@ -612,7 +612,7 @@ export function shSetClanAttr(val) {
   // Recalculate dots for old and new clan attr
   [oldCA, val].forEach(attr => {
     if (!attr) return;
-    if (!c.attributes[attr]) c.attributes[attr] = { dots: 0, bonus: 0, cp: 0, xp: 0, rule_key: null };
+    if (!c.attributes[attr]) c.attributes[attr] = { dots: 0, cp: 0, xp: 0, rule_key: null };
     const ao = c.attributes[attr];
     if (ao.cp === undefined) ao.cp = 0;
     if (ao.xp === undefined) ao.xp = 0;
@@ -719,7 +719,7 @@ export function shAddSpec(skill) {
   if (state.editIdx < 0) return;
   const c = state.chars[state.editIdx];
   if (!c.skills) c.skills = {};
-  if (!c.skills[skill]) c.skills[skill] = { dots: 0, bonus: 0, specs: [], nine_again: false };
+  if (!c.skills[skill]) c.skills[skill] = { dots: 0, specs: [], nine_again: false };
   if (!c.skills[skill].specs) c.skills[skill].specs = [];
   c.skills[skill].specs.push('');
   _markDirty();
@@ -747,7 +747,7 @@ export function shEditSkillPt(skill, field, val) {
   if (state.editIdx < 0) return;
   const c = state.chars[state.editIdx];
   if (!c.skills) c.skills = {};
-  if (!c.skills[skill]) c.skills[skill] = { dots: 0, bonus: 0, specs: [], nine_again: false, cp: 0, xp: 0, rule_key: null };
+  if (!c.skills[skill]) c.skills[skill] = { dots: 0, specs: [], nine_again: false, cp: 0, xp: 0, rule_key: null };
   const so = c.skills[skill];
   if (so.cp === undefined) so.cp = 0;
   if (so.xp === undefined) so.xp = 0;

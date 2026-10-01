@@ -675,7 +675,7 @@ function buildCharDoc() {
   for (const cat of Object.values(ATTR_CATS)) {
     for (const attr of cat) {
       const extra = wiz.attrDots[attr] || 0;
-      attributes[attr] = { dots: 1 + extra, bonus: 0, cp: extra, xp: 0, free: 0, rule_key: null };
+      attributes[attr] = { dots: 1 + extra, cp: extra, xp: 0, free: 0, rule_key: null };
     }
   }
 
@@ -685,7 +685,7 @@ function buildCharDoc() {
     for (const skill of cat) {
       const dots = wiz.skillDots[skill] || 0;
       if (dots > 0) {
-        skills[skill] = { dots, bonus: 0, specs: [], nine_again: false, cp: dots, xp: 0, free: 0, rule_key: null };
+        skills[skill] = { dots, specs: [], nine_again: false, cp: dots, xp: 0, free: 0, rule_key: null };
       }
     }
   }
