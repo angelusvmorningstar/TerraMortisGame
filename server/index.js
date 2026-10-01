@@ -527,6 +527,16 @@ async function runRulesEngineGate() {
 // Agent Record). Story 10.2's own drop step depended on 10.1b landing
 // first, which it now has. Do not add a further entry without the same
 // kind of explicit sign-off.
+//
+// TM Admin Story tm-admin.10.5 (Phase C, AC7, 2026-10-01): the rule is now
+// "no persisted `bonus` key" (no trait in character.schema.js declares it).
+// A quoted `.bonus` dot-path key is flagged at any value, zero included,
+// unless the line says $unset, and a scan root that is missing or holds no
+// source file now FAILS the gate instead of being scanned as zero files. A
+// clean tree still passes (2683 files at the time of the change), so the
+// production refusal below only fires on a real regression or a broken
+// manifest. Both allowlist entries are obsolete but inert here (TM Admin
+// paths outside this repo's scan roots).
 function runBonusWriteGate() {
   const result = verifyNoBonusWrites();
   if (result.ok) {
@@ -534,11 +544,11 @@ function runBonusWriteGate() {
     return;
   }
   if (config.NODE_ENV === 'production') {
-    console.error('CRITICAL: bonus write-freeze verification failed — refusing to boot.');
+    console.error('CRITICAL: no-persisted-bonus verification failed - refusing to boot.');
     console.error(formatViolationsReport(result.violations));
     process.exit(1);
   }
-  console.warn('WARNING: bonus write-freeze verification failed (non-production — continuing).');
+  console.warn('WARNING: no-persisted-bonus verification failed (non-production, continuing).');
   console.warn(formatViolationsReport(result.violations));
 }
 
