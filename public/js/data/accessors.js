@@ -164,8 +164,11 @@ export function getAttrEffective(c, attr) {
 
 export function setAttrVal(c, attr, dots, bonus) {
   if (!c.attributes) c.attributes = {};
-  // Preserve cp/xp/free/rule_key — only overwrite dots and bonus
-  c.attributes[attr] = { ...(c.attributes[attr] || {}), dots, bonus: bonus || 0 };
+  // Preserve cp/xp/free/rule_key; only overwrite dots. tm-admin.10.5: `bonus` is a runtime-only
+  // overlay slot, so a zero one is never written (a missing bonus reads as 0) and a nonzero
+  // in-memory one is carried through for display. Saves strip it either way.
+  const { bonus: _stored, ...rest } = c.attributes[attr] || {};
+  c.attributes[attr] = bonus ? { ...rest, dots, bonus } : { ...rest, dots };
 }
 
 // ── Skills ──
@@ -181,7 +184,9 @@ export function setSkillObj(c, skill, obj) {
   if (!obj.specs?.length && !obj.nine_again && !obj.bonus && obj.dots === 0) {
     delete c.skills[skill];
   } else {
-    c.skills[skill] = { dots: obj.dots, bonus: obj.bonus || 0, specs: obj.specs || [], nine_again: !!obj.nine_again };
+    // tm-admin.10.5: no zero `bonus` written; a nonzero in-memory (overlay) one is carried through.
+    const next = { dots: obj.dots, specs: obj.specs || [], nine_again: !!obj.nine_again };
+    c.skills[skill] = obj.bonus ? { ...next, bonus: obj.bonus } : next;
   }
 }
 

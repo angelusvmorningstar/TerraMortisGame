@@ -3,6 +3,7 @@
 import state from '../data/state.js';
 import { CHARS_DATA } from '../data/chars-data.js';
 import { stripOverlay } from '../data/st-mods.js';
+import { withoutTraitBonus } from '../data/strip-trait-bonus.js';
 
 let _renderList, _updDirtyBadge;
 
@@ -80,7 +81,9 @@ export function charsForSave() {
         }
       }
     }
-    return copy;
+    // tm-admin.10.5: never stash a trait-level `bonus` (runtime-only overlay slot). Mirrors the
+    // buildSaveBody strip on the API path.
+    return withoutTraitBonus(copy);
   });
 }
 

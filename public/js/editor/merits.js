@@ -153,7 +153,8 @@ export function ensureMeritSync(c) {
     if (m.free_pt === undefined) m.free_pt = 0;
     if (m.free_mdb === undefined) m.free_mdb = 0;
     if (m.free_sw === undefined) m.free_sw = 0;
-    if (m.bonus === undefined) m.bonus = 0;
+    // tm-admin.10.5: `bonus` is no longer defaulted. It is a runtime-only overlay slot (ST Mods add
+    // onto it in memory); a missing one reads as 0, and the save paths strip it.
   }
 }
 
@@ -171,7 +172,7 @@ export function addMerit(c, merit) {
   if (merit.free_pt === undefined) merit.free_pt = 0;
   if (merit.free_mdb === undefined) merit.free_mdb = 0;
   if (merit.free_sw === undefined) merit.free_sw = 0;
-  if (merit.bonus === undefined) merit.bonus = 0;
+  // tm-admin.10.5: no `bonus` default (runtime-only overlay slot, never persisted).
   if (merit.rule_key === undefined) merit.rule_key = null;
   c.merits.push(merit);
 }
