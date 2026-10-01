@@ -1,9 +1,31 @@
 /**
- * Static source guard: fails loudly if any TM Game source file writes a
- * changed value into a trait's `.bonus` field (attributes/skills/
- * disciplines/merits — `attrObj`/`skillObj`/`discObj`/`merit` in
- * server/schemas/character.schema.js), outside the two audit-confirmed
- * exceptions.
+ * Static source guard for the rule "no persisted `bonus` key" on a character
+ * trait (attributes/skills/disciplines/merits, the `attrObj`/`skillObj`/
+ * `discObj`/`merit` definitions in server/schemas/character.schema.js, none
+ * of which declares `bonus` since TM Admin Story tm-admin.10.5): fails loudly
+ * if any TM Game source file writes one, outside the named allowlist.
+ *
+ * Story tm-admin.10.5 (Phase C, AC7, 2026-10-01) tightened the rule. What is
+ * flagged now:
+ *   - a quoted Mongo dot-path key ending in `.bonus` used as an object key
+ *     (`'attributes.Presence.bonus': N`, the $set / $push shape) at ANY
+ *     value, a literal zero included: a stored zero is a persisted `bonus`
+ *     key too. The one exception is a line that also says `$unset` (removing
+ *     the key is the permitted direction).
+ *   - a direct or compound assignment to a `.bonus` property (`x.bonus = ...`,
+ *     `x.bonus += ...`, `x['bonus'] = ...`) with anything but a literal zero.
+ *     An assignment is an IN-MEMORY write: the ST Mods overlay legitimately
+ *     writes `.bonus` in memory, and what reaches the database through a save
+ *     body is stopped at the persisted boundary by the schema (no trait
+ *     declares `bonus`) and the routes' strip (public/js/data/strip-trait-bonus.js).
+ *     So a literal `= 0` stays permitted; a nonzero or computed value is still
+ *     flagged, since it is the retired write shape.
+ * Coverage cannot silently shrink: every scan root must exist and yield at
+ * least one file, or the guard FAILS (kind `missing-scan-root`). A renamed or
+ * deleted root used to be walked silently as zero files.
+ *
+ * The history below is the original 10.1 account, kept for the record; where
+ * it says a literal zero is not flagged, read the 10.5 rule above instead.
  *
  * TM Admin Story tm-admin.10.1 ("one true rating", Stage 1, Phase A). AC1
  * froze `bonus` in the schema's own doc comments; this is the mechanical
@@ -79,7 +101,10 @@ function isLiteralZero(rhs) {
  *  (specs/stories/34-smart-quote-guard.story.md). */
 function isExcluded(relPath, excludeGlobs) {
   return excludeGlobs.some(g => {
-    if (g.endsWith('/**')) return relPath.startsWith(g.slice(0, -3));
+    // Keep the trailing slash (tm-admin.10.5): 'server/scripts/**' must not also
+    // exclude a sibling such as 'server/scripts_other/', which the old
+    // slash-less prefix did silently.
+    if (g.endsWith('/**')) return relPath.startsWith(g.slice(0, -2));
     if (g.startsWith('**/*')) return relPath.endsWith(g.slice(4)); // e.g. '**/*.test.js' -> suffix '.test.js'
     if (g.startsWith('**/')) return relPath.endsWith(g.slice(3));
     return relPath === g;
@@ -88,6 +113,7 @@ function isExcluded(relPath, excludeGlobs) {
 
 function collectFiles(repoRoot, scanRoots, excludeGlobs) {
   const files = [];
+  const emptyRoots = [];
   function walk(dir) {
     let entries;
     try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -101,8 +127,14 @@ function collectFiles(repoRoot, scanRoots, excludeGlobs) {
       }
     }
   }
-  for (const scanRoot of scanRoots) walk(join(repoRoot, scanRoot));
-  return files;
+  for (const scanRoot of scanRoots) {
+    // A root the manifest itself excludes is a deliberate no-op, not a coverage loss.
+    if (isExcluded(scanRoot.replace(/\/?$/, '/'), excludeGlobs)) continue;
+    const before = files.length;
+    walk(join(repoRoot, scanRoot));
+    if (files.length === before) emptyRoots.push(scanRoot);
+  }
+  return { files, emptyRoots };
 }
 
 function checkFile(filePath, repoRoot) {
@@ -123,12 +155,11 @@ function checkFile(filePath, repoRoot) {
       }
     }
 
+    // Any value, a literal zero included (a stored zero is a persisted key,
+    // tm-admin.10.5); only a line that also says $unset is permitted.
     const dotPathMatch = DOTPATH_KEY_RE.exec(line);
-    if (dotPathMatch) {
-      const rhs = dotPathMatch[1] || '';
-      if (!isLiteralZero(rhs)) {
-        violations.push({ file: rel, line: i + 1, text: line.trim(), kind: 'dot-path-key' });
-      }
+    if (dotPathMatch && !line.includes('$unset')) {
+      violations.push({ file: rel, line: i + 1, text: line.trim(), kind: 'dot-path-key' });
     }
   }
   return violations;
@@ -145,10 +176,12 @@ function checkFile(filePath, repoRoot) {
  */
 export function verifyNoBonusWrites(repoRoot = REPO_ROOT, manifestOverride = null) {
   const manifest = manifestOverride || loadManifest();
-  const files = collectFiles(repoRoot, manifest.scan_roots, manifest.exclude_globs);
+  const { files, emptyRoots } = collectFiles(repoRoot, manifest.scan_roots, manifest.exclude_globs);
   const allowlistedPaths = new Set(manifest.allowlist.map(a => a.path));
 
-  const allViolations = [];
+  const allViolations = emptyRoots.map(root => ({
+    file: root, line: 0, text: 'scan root is missing or contains no .js/.mjs file: coverage would silently shrink', kind: 'missing-scan-root',
+  }));
   for (const f of files) {
     const rel = relative(repoRoot, f).replace(/\\/g, '/');
     if (allowlistedPaths.has(rel)) continue; // never true for TM Game's own tree today — see manifest comment
@@ -160,22 +193,24 @@ export function verifyNoBonusWrites(repoRoot = REPO_ROOT, manifestOverride = nul
 
 function formatViolationsReport(violations) {
   const lines = [
-    `[verify-no-bonus-writes] FAIL — ${violations.length} write site(s) to a .bonus field found outside the named allowlist:`,
+    `[verify-no-bonus-writes] FAIL - ${violations.length} problem(s): a persisted .bonus write outside the named allowlist, or a scan root that covers nothing:`,
   ];
   for (const v of violations) {
-    lines.push(`  • ${v.file}:${v.line} [${v.kind}]`);
+    lines.push(`  * ${v.file}:${v.line} [${v.kind}]`);
     lines.push(`      ${v.text}`);
   }
   lines.push('');
-  lines.push('bonus is write-frozen (server/schemas/character.schema.js) as of TM Admin Story');
-  lines.push('tm-admin.10.1. Either this is a regression of the retired STM-14 class of bug, or a');
-  lines.push('genuinely new exception that needs a named, signed-off entry in');
-  lines.push('bonus-write-allowlist.json — not a silent addition.');
+  lines.push('No `bonus` key is ever persisted on a character trait (TM Admin Stories tm-admin.10.1 and 10.5;');
+  lines.push('server/schemas/character.schema.js declares none). A boost belongs in an audited st_mods row, not');
+  lines.push('in a stored `bonus`, zero included. Either this is a regression of the retired STM-14 class of bug,');
+  lines.push('or a genuinely new exception that needs a named, signed-off entry in bonus-write-allowlist.json,');
+  lines.push('not a silent addition. A missing-scan-root problem means a root in that manifest was renamed or');
+  lines.push('removed: fix the manifest, do not delete the root from it to pass.');
   return lines.join('\n');
 }
 
 function formatPassReport(filesScanned) {
-  return `[verify-no-bonus-writes] OK — ${filesScanned} file(s) scanned, zero unallowlisted .bonus writes found.`;
+  return `[verify-no-bonus-writes] OK - ${filesScanned} file(s) scanned, every scan root covered, zero persisted .bonus writes found.`;
 }
 
 export { formatViolationsReport, formatPassReport, loadManifest };

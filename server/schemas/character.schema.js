@@ -207,7 +207,7 @@ export const characterSchema = {
     aspirations: { type: 'array', items: { type: 'string' } },
 
     // ── Attributes ────────────────────────────────────────────
-    // All nine must be present; each is { dots, bonus }.
+    // All nine must be present; each is an attrObj (see below).
     attributes: {
       type: 'object',
       required: [
@@ -241,7 +241,7 @@ export const characterSchema = {
     },
 
     // ── Skills ────────────────────────────────────────────────
-    // Sparse: only skills with dots/bonus/specs present. Each is { dots, bonus, specs, nine_again }.
+    // Sparse: only skills with dots/specs present. Each is { dots, specs, nine_again, cp, xp, rule_key }.
     skills: {
       type: 'object',
       additionalProperties: { $ref: '#/definitions/skillObj' }
@@ -453,31 +453,6 @@ export const characterSchema = {
 
   definitions: {
 
-    // ── "One true rating" Stage 1, Phase A (TM Admin Story tm-admin.10.1,
-    // 2026-08-31) — `bonus` is WRITE-FROZEN across all four definitions
-    // below (attrObj, skillObj, discObj, merit). It still holds whatever
-    // value it already carried before this freeze (real, nonzero values
-    // genuinely exist live today — e.g. Jack Fallow's and Charles
-    // Mercer-Willows's Presence, per
-    // `TM Admin/specs/audits/rules-engine-and-mods-audit.md`), and every
-    // existing read path (`getAttrEffective`, `skTotal`, `discDots`,
-    // `meritEffectiveRating`) still sums `dots`/`rating` + `bonus` exactly
-    // as before — this freeze is write-side only, nothing here changes what
-    // renders. No NEW code path may write a changed value into `bonus`,
-    // full stop. This is the interim step before Story 10.2 folds every
-    // existing `bonus` value into `dots`/`rating` and drops the field
-    // entirely; `bonus` is not removed here, only frozen.
-    //
-    // The only two audit-confirmed exceptions (both live-rule relationships
-    // that must keep tracking another trait's *current* dots, which a
-    // one-time fold cannot represent) are named in
-    // `server/scripts/rules-verify/bonus-write-allowlist.json` and enforced
-    // by `server/scripts/rules-verify/verify-no-bonus-writes.js` — both
-    // exceptions are TM-Admin-side (Mantle of Amorous Fire's raw-write
-    // script; Faith Militant's currently-unbuilt equivalent), not TM
-    // Game's own code, so a clean TM Game repo has zero write sites to any
-    // of the four `bonus` fields below.
-    //
     // `free` REMOVED 2026-08-31 (code review, "one true rating" investigation): confirmed
     // vestigial for BOTH attributes and skills - grepped every render/mechanical code path in
     // both this repo and TM Admin's own port, zero live reads of attrObj.free or skillObj.free
@@ -486,19 +461,19 @@ export const characterSchema = {
     // instances and 630 real skill instances carrying the field were stripped from live data
     // in the same pass (dots untouched throughout - confirmed live, e.g. Charlie Ballsack's
     // Weaponry stays dots:5).
-    // Story tm-admin.10.2a (2026-09-28): `bonus` is no longer REQUIRED here, matching skillObj and
-    // discObj, which already treat it as optional. The property stays declared and
-    // `additionalProperties` is unchanged, so no live document is affected. `required` is enforced
-    // ONLY by the full schema (POST creation); every PUT uses the partial schema, which
-    // derivePartialSchema() builds with `required` stripped at every depth.
+    //
+    // `bonus` is NOT declared on attrObj, skillObj, discObj or merit (TM Admin Story tm-admin.10.5,
+    // 2026-10-01). It is an in-memory overlay slot only (ST Mods add onto a trait's `bonus` leaf when
+    // a sheet loads) and is never stored. With `additionalProperties: false` a body carrying it fails
+    // validation; the character write routes strip any trait-level `bonus` BEFORE validating
+    // (public/js/data/strip-trait-bonus.js, Angelus's 2026-10-01 "strip silently" ruling), so a stale
+    // client still saves. `required` is enforced ONLY by the full schema (POST creation); every PUT
+    // uses the partial schema, which derivePartialSchema() builds with `required` stripped at every depth.
     attrObj: {
       type: 'object',
       required: ['dots'],
       properties: {
         dots:     { type: 'integer', minimum: 0, maximum: 10 },
-        // WRITE-FROZEN (see the block above `attrObj`). Holds whatever
-        // value it already carried; no new code may change it.
-        bonus:    { type: 'integer', minimum: 0 },
         cp:       { type: 'integer', minimum: 0 },
         xp:       { type: 'integer', minimum: 0 },
         rule_key: { type: ['string', 'null'] }
@@ -511,9 +486,6 @@ export const characterSchema = {
       required: ['dots'],
       properties: {
         dots:       { type: 'integer', minimum: 0, maximum: 5 },
-        // WRITE-FROZEN (see the block above `attrObj`). Holds whatever
-        // value it already carried; no new code may change it.
-        bonus:      { type: 'integer', minimum: 0 },
         specs:      { type: 'array',   items: { type: 'string' } },
         nine_again: { type: 'boolean' },
         cp:         { type: 'integer', minimum: 0 },
@@ -528,21 +500,6 @@ export const characterSchema = {
       required: ['dots'],
       properties: {
         dots:     { type: 'integer', minimum: 0, maximum: 5 },
-        // TM Admin interop (see the block near the top of `properties`). Brings
-        // disciplines into line with attrObj and skillObj, which both already
-        // declare `bonus`. Same semantics: bonus dots sit ALONGSIDE `dots` and
-        // are not a purchase channel, so they are not summed into it. No
-        // `maximum` on purpose — `dots` is capped at 5 because five is the rating
-        // ceiling, and a bonus is what takes a trait past its own cap.
-        //
-        // WRITE-FROZEN (see the block above `attrObj`) as of Story
-        // tm-admin.10.1. TM Game's own `accessors.discDots()` still doesn't
-        // read this field at all (audit gap #7, left as-is — see
-        // `TM Admin/specs/stories/tm-admin.10.1.tm-game-schema-freeze-bonus.story.md`
-        // AC5) — that divergence is unrelated to the freeze and closes by
-        // supersession once Story 10.2 drops the field entirely, not fixed
-        // here.
-        bonus:    { type: 'integer', minimum: 0 },
         cp:       { type: 'integer', minimum: 0 },
         xp:       { type: 'integer', minimum: 0 },
         free:     { type: 'integer', minimum: 0 },
@@ -778,24 +735,9 @@ export const characterSchema = {
         // merit fields before PUT/POST. Listed in the schema for completeness;
         // server validation accepts it but the save path keeps it from leaking.
         _collective_shared_with: { type: 'array', items: { type: 'string' } },
-        rule_key: { type: ['string', 'null'] },
-        // WRITE-FROZEN (see the block above `attrObj`) as of Story
-        // tm-admin.10.1. Now mechanically enforced for merits too, matching
-        // the attribute/skill channels: `shAdjMeritBonus`
-        // (`public/js/editor/edit.js:599-608`), the merit-bonus stepper
-        // (`feature.333`/`feature.335`, deliberately out of STM-14's own
-        // scope per `specs/qa/gates/1034.1-stm-14-audited-adhoc-bonus.yml:106`)
-        // that wrote a changed value into this field directly and unaudited,
-        // was retired by TM Admin Story tm-admin.10.1b. Ad hoc merit bonuses
-        // now go through the same audited `st_mods` apply-affordance flow
-        // the attribute/skill channels already used (`merits.N.bonus` on the
-        // server's dynamic stat-path regex, `server/routes/st_mods.js`). The
-        // THIRD, TEMPORARY allowlist entry Story tm-admin.10.1 added (with
-        // Angelus's explicit sign-off, 2026-08-31) for the interim was
-        // removed once 10.1b landed — the guard is back to its original two
-        // durable, audit-confirmed exceptions. See tm-admin.10.1's and
-        // tm-admin.10.1b's own Dev Agent Records for the full account.
-        bonus:    { type: 'integer', minimum: 0 }
+        rule_key: { type: ['string', 'null'] }
+        // No `bonus` (see the note above attrObj): ad hoc merit bonuses live in audited
+        // `st_mods` rows (`merits.N.bonus`, server/routes/st_mods.js) and exist in memory only.
       },
       additionalProperties: false
     },

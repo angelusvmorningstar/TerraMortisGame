@@ -16,6 +16,13 @@ name: Verify No Bonus Writes
 # once it landed. See
 # TM Admin/specs/stories/tm-admin.10.1.tm-game-schema-freeze-bonus.story.md
 # and TM Admin's own Story 10.1b for the full account.
+#
+# TM Admin Story tm-admin.10.5 (Phase C, AC7, 2026-10-01) tightened the rule
+# to "no persisted `bonus` key": no trait in server/schemas/character.schema.js
+# declares `bonus`, a quoted `.bonus` dot-path key is flagged at any value
+# (zero included) unless the line says $unset, and a scan root that is missing
+# or holds no source file fails this job, so a rename cannot silently shrink
+# what CI covers.
 
 on:
   push:
@@ -43,5 +50,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Verify no unallowlisted .bonus writes
+      - name: Verify no persisted .bonus writes
         run: node scripts/rules-verify/verify-no-bonus-writes.js

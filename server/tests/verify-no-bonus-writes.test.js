@@ -16,6 +16,14 @@
  *      boundary (literal-zero writes allowed, pass-through object-literal
  *      construction not flagged, excluded dirs never scanned) without
  *      depending on real source staying exactly as-is.
+ *
+ * TM Admin Story tm-admin.10.5 (Phase C, AC7, 2026-10-01) changed the rule to
+ * "no persisted `bonus` key": a quoted dot-path key ending in `.bonus` is now
+ * flagged at ANY value, zero included, unless the line says `$unset`; an
+ * in-memory literal-zero `.bonus = 0` assignment stays permitted; and a scan
+ * root that is missing or holds no source file FAILS the guard. Because of the
+ * last point every synthetic tree now seeds one harmless file per scan root,
+ * which shifted two existing `filesScanned` counts by exactly those seeds.
  */
 
 import { describe, it, expect, afterEach } from 'vitest';
@@ -30,6 +38,13 @@ describe('verify-no-bonus-writes — real repo state', () => {
     expect(result.filesScanned).toBeGreaterThan(100); // sanity: server/ + public/js/ both scanned
     expect(result.violations).toEqual([]);
     expect(result.ok).toBe(true);
+  });
+
+  it('covers every scan root (10.5: a missing or empty root fails the guard)', () => {
+    const realManifest = loadManifest();
+    expect(realManifest.scan_roots).toEqual(['server', 'public/js']);
+    const result = verifyNoBonusWrites();
+    expect(result.violations.filter(v => v.kind === 'missing-scan-root')).toEqual([]);
   });
 
   it('the manifest is back to exactly the two durable, audit-confirmed exceptions — no temporary carve-out', () => {
@@ -62,9 +77,16 @@ describe('verify-no-bonus-writes — synthetic fixtures', () => {
     tmpRoot = undefined;
   });
 
-  function makeFixture(files) {
+  // Every scan root must hold at least one file (10.5), so each synthetic tree
+  // starts with one harmless file per default scan root.
+  const SEEDS = {
+    'server/placeholder.js': 'export const y = 2;\n',
+    'public/js/placeholder.js': 'export const x = 1;\n',
+  };
+
+  function makeFixture(files, { seed = true } = {}) {
     tmpRoot = mkdtempSync(join(tmpdir(), 'bonus-guard-test-'));
-    for (const [relPath, content] of Object.entries(files)) {
+    for (const [relPath, content] of Object.entries({ ...(seed ? SEEDS : {}), ...files })) {
       const full = join(tmpRoot, relPath);
       mkdirSync(join(full, '..'), { recursive: true });
       writeFileSync(full, content, 'utf8');
@@ -108,12 +130,67 @@ describe('verify-no-bonus-writes — synthetic fixtures', () => {
     expect(result.ok).toBe(true);
   });
 
-  it('allows a literal-zero Mongo dot-path $set key', () => {
+  // tm-admin.10.5 inverted this test: it used to be 'allows a literal-zero
+  // Mongo dot-path $set key'. Under "no persisted bonus key" a stored zero is
+  // a persisted key, so it is now flagged.
+  it('FLAGS a literal-zero Mongo dot-path $set key (a stored zero is a persisted key, 10.5)', () => {
     const root = makeFixture({
-      'server/scripts_not_excluded/ok.js': `const doc = { $set: { 'attributes.Presence.bonus': 0 } };\n`,
+      'server/scripts_not_excluded/bad.js': `const doc = { $set: { 'attributes.Presence.bonus': 0 } };\n`,
+    });
+    const result = verifyNoBonusWrites(root);
+    expect(result.ok).toBe(false);
+    expect(result.violations).toEqual([
+      expect.objectContaining({ file: 'server/scripts_not_excluded/bad.js', line: 1, kind: 'dot-path-key' }),
+    ]);
+  });
+
+  it('FLAGS a literal-zero merit dot-path key in client code too', () => {
+    const root = makeFixture({
+      'public/js/bad.js': `await col.updateOne({ _id }, { $set: { 'merits.3.bonus': 0 } });\n`,
+    });
+    const result = verifyNoBonusWrites(root);
+    expect(result.ok).toBe(false);
+    expect(result.violations[0].kind).toBe('dot-path-key');
+  });
+
+  it('does NOT flag a dot-path key inside an $unset (removal is the permitted direction, 10.5)', () => {
+    const root = makeFixture({
+      'server/routes/ok.js': `await col.updateOne({ _id }, { $unset: { 'attributes.Wits.bonus': '' } });\n`,
     });
     const result = verifyNoBonusWrites(root);
     expect(result.ok).toBe(true);
+  });
+
+  it('FAILS when a scan root is missing or holds no source file (coverage cannot silently shrink, 10.5)', () => {
+    const missing = makeFixture({ 'server/a.js': 'export const a = 1;\n' }, { seed: false });
+    let result = verifyNoBonusWrites(missing);
+    expect(result.ok).toBe(false);
+    expect(result.violations).toEqual([expect.objectContaining({ file: 'public/js', kind: 'missing-scan-root' })]);
+    rmSync(missing, { recursive: true, force: true });
+
+    const nonSource = makeFixture({ 'server/a.js': 'export const a = 1;\n', 'public/js/readme.txt': 'not source\n' }, { seed: false });
+    result = verifyNoBonusWrites(nonSource);
+    expect(result.violations).toEqual([expect.objectContaining({ file: 'public/js', kind: 'missing-scan-root' })]);
+    writeFileSync(join(nonSource, 'public/js/b.mjs'), 'export const b = 2;\n', 'utf8');
+    expect(verifyNoBonusWrites(nonSource).ok).toBe(true);
+  });
+
+  it('a dir/** exclusion covers only that directory, never a sibling sharing its name as a prefix (10.5)', () => {
+    // Before 10.5 'server/scripts/**' was matched as the slash-less prefix
+    // 'server/scripts', so server/scripts_other/ was silently never scanned.
+    const root = makeFixture({
+      'server/scripts/one-off.mjs': `c.attributes.Presence.bonus = 5;\n`,
+      'server/scripts_other/bad.js': `c.attributes.Presence.bonus = 5;\n`,
+      'server/testsuite/bad.js': `c.attributes.Presence.bonus = 5;\n`,
+    });
+    const result = verifyNoBonusWrites(root);
+    expect(result.violations.map(v => v.file).sort()).toEqual(['server/scripts_other/bad.js', 'server/testsuite/bad.js']);
+  });
+
+  it('a scan root the manifest itself excludes is a deliberate no-op, not a missing root', () => {
+    const root = makeFixture({});
+    const manifestOverride = { scan_roots: ['server', 'public/js', 'server/scripts'], exclude_globs: ['server/scripts/**'], allowlist: [] };
+    expect(verifyNoBonusWrites(root, manifestOverride).ok).toBe(true);
   });
 
   it('does not flag a read (?./|| 0) or object-literal pass-through construction', () => {
@@ -137,7 +214,7 @@ describe('verify-no-bonus-writes — synthetic fixtures', () => {
     });
     const result = verifyNoBonusWrites(root);
     expect(result.ok).toBe(true);
-    expect(result.filesScanned).toBe(0);
+    expect(result.filesScanned).toBe(2); // only the two per-root seed files (10.5); was 0 before the seeds
   });
 
   it('does not scan *.test.js files anywhere', () => {
@@ -165,6 +242,6 @@ describe('verify-no-bonus-writes — synthetic fixtures', () => {
     };
     const result = verifyNoBonusWrites(root, manifestOverride);
     expect(result.ok).toBe(true);
-    expect(result.filesScanned).toBe(1); // file was found, just skipped via allowlist
+    expect(result.filesScanned).toBe(3); // file was found, just skipped via allowlist (plus the two 10.5 seed files; was 1)
   });
 });
