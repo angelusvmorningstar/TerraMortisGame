@@ -51,7 +51,7 @@ import {
   shSetWhiteAntsTerritory,
   shSetTrapDoorAnchor,
   registerCallbacks as registerDomainCallbacks,
-  getDirtyPartners, clearDirtyPartners
+  getDirtyPartners, clearDirtyPartners, getStrippedPartners, clearStrippedPartners
 } from './edit-domain.js';
 
 /* Re-export merit-category handlers so consumers can import from edit.js */
@@ -71,7 +71,7 @@ export {
   shAddStyle, shRemoveStyle, shEditStyle, shAddPick, shRemovePick,
   shSetWhiteAntsTerritory,
   shSetTrapDoorAnchor,
-  getDirtyPartners, clearDirtyPartners
+  getDirtyPartners, clearDirtyPartners, getStrippedPartners, clearStrippedPartners
 };
 
 /* ── Callback registration (avoids circular deps with main.js / sheet.js) ── */

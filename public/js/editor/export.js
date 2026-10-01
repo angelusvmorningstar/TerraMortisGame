@@ -50,11 +50,16 @@ export function loadDB() {
  */
 export function charsForSave() {
   return state.chars.map(c => {
-    const copy = JSON.parse(JSON.stringify(c));
+    // tm-admin.10.6 AC4: the same safe clone as admin.js buildSaveBody. structuredClone keeps the
+    // `undefined` entries in _st_mod_base that a JSON round trip drops, so stripOverlay can delete an
+    // overlay-created leaf or container instead of stashing it. The JSON round trip afterwards keeps the
+    // stash exactly as JSON-shaped as before. A clone or strip failure throws: never the raw object.
+    let copy = structuredClone(c);
     // Restore base values from the cloned _st_mod_base snapshot, then
     // delete _st_mod_overlay + _st_mod_base. Pre-overlay characters
     // have no _st_mod_base; stripOverlay no-ops cleanly in that case.
     stripOverlay(copy);
+    copy = JSON.parse(JSON.stringify(copy));
     // ADR-006: c.derived is the render-time materialised defence cache,
     // never stored. Strip before localStorage stash so a fresh boot
     // recomputes from base values without carrying stale derived state.

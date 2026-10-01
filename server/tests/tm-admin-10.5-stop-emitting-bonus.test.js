@@ -23,14 +23,14 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const read = (rel) => fs.readFileSync(path.join(REPO_ROOT, rel), 'utf8');
 const u = (...p) => pathToFileURL(path.resolve(REPO_ROOT, ...p)).href;
 
-let withoutTraitBonus, applyStMods;
+let withoutTraitBonus, applyStMods, stripOverlay;
 let setAttrVal, setSkillObj, getAttrBonus, getAttrTotal, getAttrEffective, getSkillObj, skBonus;
 let ensureMeritSync, addMerit;
 let editMod, stateMod, exportMod, applyBloodlineRulesFromDb;
 
 beforeAll(async () => {
   ({ withoutTraitBonus } = await import(u('public', 'js', 'data', 'strip-trait-bonus.js')));
-  ({ applyStMods } = await import(u('public', 'js', 'data', 'st-mods.js')));
+  ({ applyStMods, stripOverlay } = await import(u('public', 'js', 'data', 'st-mods.js')));
   const acc = await import(u('public', 'js', 'data', 'accessors.js'));
   ({ setAttrVal, setSkillObj, getAttrBonus, getAttrTotal, getAttrEffective, getSkillObj, skBonus } = acc);
   ({ ensureMeritSync, addMerit } = await import(u('public', 'js', 'editor', 'merits.js')));
@@ -77,8 +77,9 @@ function loadRealBuildSaveBody() {
   const legacy = /const _LEGACY_FIELDS = new Set\([^;]*\);/.exec(src)[0];
   const deprecated = /const _DEPRECATED_FIELDS = new Set\([^;]*\);/.exec(src)[0];
   const fn = sliceBlock(src, /function buildSaveBody\(c\)\s*\{/);
+  // tm-admin.10.6: buildSaveBody now also calls the real stripOverlay (on a clone), so inject it too.
   // eslint-disable-next-line no-new-func
-  return new Function('withoutTraitBonus', `${legacy}\n${deprecated}\n${fn}\nreturn buildSaveBody;`)(withoutTraitBonus);
+  return new Function('withoutTraitBonus', 'stripOverlay', `${legacy}\n${deprecated}\n${fn}\nreturn buildSaveBody;`)(withoutTraitBonus, stripOverlay);
 }
 
 /** A live-shaped character: stored zero bonuses (as all 44 live characters carry today) plus an

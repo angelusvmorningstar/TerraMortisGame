@@ -12,6 +12,7 @@ import { pruneContactsSpheres, domKey } from './domain.js';
 import { freeOf, normaliseAttachedTo, validatePledge, buildSwornBy, resolveRatingBasis, OATH_EXIT_REASONS, buildOathExitEvent, buildOathRestoredEvent, oathSuspendedDots } from '../data/rules-helpers.js';
 import { meritRating } from './xp.js';
 import { resolveSharedWithMember as _resolveSharedWithMember } from '../data/helpers.js';
+import { stripOverlay } from '../data/st-mods.js';
 
 function ruleKeyFor(name) {
   const slug = (name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
@@ -34,9 +35,26 @@ export function registerCallbacks(markDirty, renderSheet) {
 
 /* ── Partner dirty tracking — populated by domain sharing edits ── */
 const _dirtyPartners = new Set(); // character _id strings
-function _markPartnerDirty(ch) { if (ch && ch._id) _dirtyPartners.add(String(ch._id)); }
+// tm-admin.10.6 AC2: partners whose ST Mods overlay was stripped before this flow mutated them, so the
+// admin can re-overlay them after the cascade save, or when the edit is abandoned (character _id strings).
+const _strippedPartners = new Set();
+/** Strip a partner's overlay BEFORE it is mutated. The overlay remembers merit originals by INDEX, so a
+ *  merit added to or removed from a still-overlaid partner would leave a later strip restoring base into
+ *  the wrong merit. The character open in the editor is already stripped and is never touched here. */
+function _stripPartnerBeforeMutation(ch) {
+  if (!ch || !ch._id || ch === state.chars[state.editIdx]) return;
+  stripOverlay(ch);
+  _strippedPartners.add(String(ch._id));
+}
+function _markPartnerDirty(ch) {
+  if (!ch || !ch._id) return;
+  _stripPartnerBeforeMutation(ch); // idempotent: the mutation sites below strip first
+  _dirtyPartners.add(String(ch._id));
+}
 export function getDirtyPartners() { return new Set(_dirtyPartners); }
 export function clearDirtyPartners() { _dirtyPartners.clear(); }
+export function getStrippedPartners() { return new Set(_strippedPartners); }
+export function clearStrippedPartners() { _strippedPartners.clear(); }
 
 /* ══════════════════════════════════════════════════════════
    INFLUENCE MERITS
@@ -536,6 +554,7 @@ export function shAddDomainPartner(domIdx, partnerName) {
       x.category === 'domain' && x.name === meritName && (x.qualifier || undefined) === meritQualifier
     );
     if (mm) {
+      if (memberId !== cId) _stripPartnerBeforeMutation(member);
       mm.shared_with = fullGroup.filter(n => n !== memberId);
       if (memberId !== cId) _markPartnerDirty(member);
     }
@@ -543,6 +562,7 @@ export function shAddDomainPartner(domIdx, partnerName) {
 
   // Ensure the new partner has this domain merit (add at 0 if missing, with same qualifier)
   if (partner) {
+    _stripPartnerBeforeMutation(partner); // tm-admin.10.6 AC2: before addMerit can shift anything
     const partnerId = String(partner._id);
     let pm = (partner.merits || []).find(x =>
       x.category === 'domain' && x.name === meritName && (x.qualifier || undefined) === meritQualifier
@@ -584,6 +604,7 @@ export function shRemoveDomainPartner(domIdx, partnerName) {
       x.category === 'domain' && x.name === meritName && (x.qualifier || undefined) === meritQualifier
     );
     if (mm) {
+      if (memberId !== cId) _stripPartnerBeforeMutation(member);
       mm.shared_with = remainingGroup.filter(n => n !== memberId);
       if (memberId !== cId) _markPartnerDirty(member);
     }
@@ -591,6 +612,8 @@ export function shRemoveDomainPartner(domIdx, partnerName) {
 
   // On the partner: remove this char from their shared_with
   if (partner) {
+    _stripPartnerBeforeMutation(partner); // tm-admin.10.6 AC2: before removeMerit shifts the indices
+
     const pm = (partner.merits || []).find(x =>
       x.category === 'domain' && x.name === meritName && (x.qualifier || undefined) === meritQualifier
     );
