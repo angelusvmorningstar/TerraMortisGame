@@ -786,6 +786,7 @@ async function toggleRetire() {
   const idx = editorState.editIdx;
   const c = chars[idx];
   if (!c || !c._id) return;
+  const _id = c._id;
 
   const newState = !c.retired;
   const action = newState ? 'retire' : 'unretire';
