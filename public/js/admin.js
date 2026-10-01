@@ -113,7 +113,7 @@ import {
   shSetTrapDoorAnchor,
   shAddEquip, shRemoveEquip, shEquipBucketFilter,
   registerCallbacks as registerEditCallbacks,
-  getDirtyPartners, clearDirtyPartners
+  getDirtyPartners, clearDirtyPartners, getStrippedPartners, clearStrippedPartners
 } from './editor/edit.js';
 import { renderIdentityTab, updField, updStatus, registerCallbacks as registerIdentityCallbacks } from './editor/identity.js';
 import {
@@ -168,7 +168,11 @@ async function renderSheetWithOverlay(c) {
     return;
   }
 
+  // tm-admin.10.6 AC6: after each await, give up if Edit was clicked or another character opened
+  // meanwhile; applying now would re-overlay a stripped edit-mode character (the newer call wins).
+  const stale = () => editorState.editMode || chars[editorState.editIdx] !== c || selectedChar !== c;
   const tracker = await loadTrackerState(c).catch(() => null);
+  if (stale()) return;
   spliceCurrent(c, tracker, { calcWillpowerMax, calcVitaeMax });
 
   // Issue #879 (ADR-006 D3 + D4): composition order is
@@ -181,6 +185,7 @@ async function renderSheetWithOverlay(c) {
   materialiseDerivedDefence(c);
 
   const mods = await loadStMods(c._id);
+  if (stale()) return;
   const settings = getGlobalSettings();
   const overlayEnabled = (settings?.st_mods_enabled !== false) && !c.st_mods_suppressed;
   applyStMods(c, mods, overlayEnabled);
@@ -696,6 +701,7 @@ function renderCharGrid() {
 // ── Character detail panel ──
 
 function openCharDetail(c) {
+  releaseAbandonedPartners(c); // tm-admin.10.6 AC7
   selectedChar = c;
   editorState.chars = chars;
   editorState.editIdx = chars.indexOf(c);
@@ -916,6 +922,7 @@ function closeCharDetail() {
   if (editorState.dirty.size > 0) {
     if (!confirm('You have unsaved changes. Close anyway?')) return;
   }
+  releaseAbandonedPartners(null); // tm-admin.10.6 AC7
   selectedChar = null;
   editorState.editMode = false;
   editorState.dirty.clear();
@@ -1033,8 +1040,33 @@ function buildSaveBody(c) {
   // into memory at page-open, silently clobbering any concurrent cascade write. The in-memory
   // `chars[]` entry still carries `ordeals` for display (the char-card badge reads it), it
   // just never round-trips back out through this save path any more.
-  const body = {};
+  //
+  // tm-admin.10.6: an ST Mods overlay value is never saved. Every chars[] entry is overlaid at boot
+  // (blood_potency, humanity, attribute/skill/discipline dots, merit dots and bonus), and the partner
+  // cascade below saves characters straight from that array. So: keep the persisted keys plus the two
+  // overlay records, deep-clone that with structuredClone (it keeps the `undefined` markers a JSON round
+  // trip loses, so an overlay-created leaf or container is removed), strip the overlay on the CLONE,
+  // then filter as before. If the clone or strip throws, the save is aborted: never the raw object.
+  // The in-memory character keeps its overlay for display.
+  const persisted = {};
   for (const [k, v] of Object.entries(c)) {
+    if (k === '_st_mod_base' || k === '_st_mod_overlay') { persisted[k] = v; continue; }
+    if (k === '_id' || k.startsWith('_') || k === 'current' || k === 'derived' || k === 'assets'
+        || k === 'ordeals' || _LEGACY_FIELDS.has(k) || _DEPRECATED_FIELDS.has(k)) continue;
+    persisted[k] = v;
+  }
+  let base;
+  try {
+    base = structuredClone(persisted);
+    stripOverlay(base);
+  } catch (err) {
+    const e = new Error(`Save aborted for ${c.name || c._id}: the ST Mods overlay could not be removed safely (${err.message}). Nothing was saved.`);
+    e.overlayAbort = true;
+    throw e;
+  }
+  const body = {};
+  for (const [k, v] of Object.entries(base)) {
+    // Filter again: a strip can restore a non-persisted path (derived.*, current.*) onto the clone.
     if (k === '_id' || k.startsWith('_') || k === 'current' || k === 'derived' || k === 'assets'
         || k === 'ordeals' || _LEGACY_FIELDS.has(k) || _DEPRECATED_FIELDS.has(k)) continue;
     body[k] = v;
@@ -1094,21 +1126,83 @@ async function saveCharToApi() {
 
     // Cascade-save any partner characters dirtied by domain sharing edits
     const partnerIds = [...getDirtyPartners()].filter(id => String(id) !== String(_id));
+    const strippedIds = [...getStrippedPartners()];
     clearDirtyPartners();
-    if (partnerIds.length) {
-      await Promise.all(partnerIds.map(pid => {
-        const pc = chars.find(ch => String(ch._id) === String(pid));
-        if (!pc) return Promise.resolve();
-        return apiPut('/api/characters/' + pid, buildSaveBody(pc))
-          .then(upd => { Object.assign(pc, upd); })
-          .catch(err => console.warn('Partner save failed for', pid, err));
-      }));
-    }
+    clearStrippedPartners();
+    await savePartnerCascade(partnerIds, strippedIds);
   } catch (err) {
     saveBtn.textContent = 'Error';
     console.error('Save failed:', err.message);
+    if (err && err.overlayAbort) alert(err.message);
     setTimeout(() => { saveBtn.textContent = 'Save to DB'; }, 2000);
   }
+}
+
+// tm-admin.10.6 AC5: PUT each dirty partner, then re-overlay them all in ONE batch so the sheet keeps
+// showing their ST Mods. Partners were stripped before the domain edit mutated them (edit-domain.js), so
+// a successful PUT only has to drop any stale overlay records (never stripOverlay here: it would write
+// the old base back over the fresh server values) before taking the server's document. A failed PUT
+// leaves that character as it was and it is re-overlaid too.
+async function savePartnerCascade(partnerIds, strippedIds = []) {
+  const toReoverlay = new Set();
+  const aborted = [];
+  await Promise.all(partnerIds.map(pid => {
+    const pc = chars.find(ch => String(ch._id) === String(pid));
+    if (!pc) return Promise.resolve();
+    toReoverlay.add(pc);
+    let body;
+    try {
+      body = buildSaveBody(pc);
+    } catch (err) {
+      console.error('Partner save aborted for', pid, err);
+      aborted.push(err.message);
+      return Promise.resolve();
+    }
+    return apiPut('/api/characters/' + pid, body)
+      .then(upd => {
+        delete pc._st_mod_base;
+        delete pc._st_mod_overlay;
+        Object.assign(pc, upd);
+      })
+      .catch(err => console.warn('Partner save failed for', pid, err));
+  }));
+  for (const id of strippedIds) {
+    const pc = chars.find(ch => String(ch._id) === String(id));
+    if (pc) toReoverlay.add(pc);
+  }
+  await reoverlayCharacters([...toReoverlay]);
+  if (aborted.length) alert(aborted.join('\n'));
+}
+
+// tm-admin.10.6: put the ST Mods overlay back on characters this editor stripped, in one bulk fetch.
+// Display-only, so a failure only logs and never makes a save look failed. The character open in edit
+// mode must stay stripped, so it is skipped and, should it be in the batch anyway, stripped again
+// straight after (no user event can run between the apply and that check).
+async function reoverlayCharacters(list) {
+  const open = editorState.editMode ? chars[editorState.editIdx] : null;
+  const targets = list.filter(pc => pc && pc !== open);
+  if (!targets.length) return;
+  try {
+    for (const pc of targets) materialiseDerivedDefence(pc);
+    await applyOverlayToAll(targets, getGlobalSettings()?.st_mods_enabled !== false);
+    const nowOpen = editorState.editMode ? chars[editorState.editIdx] : null;
+    if (nowOpen && targets.includes(nowOpen)) stripOverlay(nowOpen);
+  } catch (err) {
+    console.warn('ST Mods re-apply failed for partner characters', err);
+  }
+}
+
+// tm-admin.10.6 AC7: an abandoned domain edit must not leave partners queued for the next unrelated
+// Save, nor stripped of their overlay. `keep` is the character about to be opened, which renders its
+// own overlay. A partner's unsaved in-memory shared_with edit is left in place (pre-existing, out of scope).
+function releaseAbandonedPartners(keep) {
+  const strippedIds = [...getStrippedPartners()];
+  clearDirtyPartners();
+  clearStrippedPartners();
+  const list = strippedIds
+    .map(id => chars.find(ch => String(ch._id) === String(id)))
+    .filter(pc => pc && pc !== keep);
+  reoverlayCharacters(list);
 }
 
 // ── Init ──
