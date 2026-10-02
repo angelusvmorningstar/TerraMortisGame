@@ -1,21 +1,19 @@
 /**
- * E2E tests — Admin Cycle tab: phase controls (CYCLE epic #708, story 3)
- * Covers: phase buttons rendered, active state, PUT on click, Game confirm +
- * tracker reset, cancel aborts, inline error on API failure.
+ * E2E tests — Admin Cycle tab: the phase is a READ-ONLY status (Story tm-admin.27.1, 2026-10-02).
  *
- * STALE AT BASE, whole file (recorded 2026-08-16 by CM-4a, measured both with
- * and without that change: 11 failed, 11 failed). It still asserts the
- * pre-CM-1 shape - THREE phase buttons, and an active button that is
- * DISABLED - where the Cycle tab has had four buttons (downtime, processing,
- * prep, game) and a click-to-clear toggle since CM-1 (#1028). Rewriting it to
- * the current UI is its own piece of work and is not CM-4a's; CM-4a only
- * reconciled the one assertion below that its own change inverted, so this
- * file does not sit there certifying the opposite of shipped behaviour.
+ * History: this file was written for CYCLE epic #708 story 3 (phase buttons, a Game confirm and a
+ * tracker reset) and sat STALE AT BASE for a long time (recorded 2026-08-16 by CM-4a: 11 failed with
+ * and without that change; it still asserted three buttons with the active one disabled). Story 27.1
+ * retired the whole feature: TM Game no longer sets a Chapter's phase and never wipes the trackers
+ * (TM Admin is the only phase writer, and PUT /api/chapters/:id refuses phase, game_phase and status
+ * with a 409). The Cycle tab now shows the phase as a status, glyph plus words, with the note
+ * "Set in TM Admin". This file was rewritten to pin that, so it no longer certifies behaviour that no
+ * longer exists.
  */
 
 const { test, expect } = require('@playwright/test');
 
-// ── Test data ───────────────────────────────────────────────────────────────
+// ── Test data ──────────────────────────────────────────────
 
 const ST_USER = {
   id: '123456789', username: 'test_st', global_name: 'Test ST',
@@ -27,16 +25,18 @@ const TEST_STORY_CYCLES = [
   { _id: 'sc-001', number: 1, label: 'Story One', created_at: '2026-01-01T00:00:00.000Z' },
 ];
 
-// cyc-001: currently in 'processing' phase
-// cyc-002: no game_phase (legacy)
-// cyc-003: currently in 'game' phase
+// cyc-001: declared phase 'processing'
+// cyc-002: legacy shape, no phase fields, status 'active' (reads as downtime)
+// cyc-003: declared phase 'game'
+// cyc-004: nothing at all (no phase set)
 const TEST_CYCLES = [
-  { _id: 'cyc-001', label: 'DT 1', game_number: 1, game_phase: 'processing', story_cycle_id: 'sc-001', status: 'closed' },
-  { _id: 'cyc-002', label: 'DT 2', game_number: 2, game_phase: null,         story_cycle_id: null,     status: 'active' },
-  { _id: 'cyc-003', label: 'DT 3', game_number: 3, game_phase: 'game',       story_cycle_id: null,     status: 'game'   },
+  { _id: 'cyc-001', label: 'DT 1', game_number: 1, phase: 'processing', game_phase: 'processing', story_cycle_id: 'sc-001', status: 'closed' },
+  { _id: 'cyc-002', label: 'DT 2', game_number: 2, story_cycle_id: null, status: 'active' },
+  { _id: 'cyc-003', label: 'DT 3', game_number: 3, phase: 'game', game_phase: 'game', story_cycle_id: null, status: 'game' },
+  { _id: 'cyc-004', label: 'DT 4', game_number: 4, story_cycle_id: null },
 ];
 
-// ── Helpers ──────────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────
 
 async function loginAsST(page) {
   await page.route('**/api/**', route =>
@@ -58,14 +58,9 @@ async function loginAsST(page) {
   }, ST_USER);
 }
 
-async function mockCycleApis(page, {
-  cycles = TEST_CYCLES,
-  putStatus = 200,
-  trackerDeleteStatus = 200,
-} = {}) {
-  // Mutable reference so tests can swap the returned cycle per PUT
-  let currentCycles = cycles.map(c => ({ ...c }));
-
+/** Mocks the Cycle tab's APIs and RECORDS every write, so a test can prove none happened. */
+async function mockCycleApis(page, { cycles = TEST_CYCLES } = {}) {
+  const writes = [];
   await page.route(/\/api\/story_cycles$/, route =>
     route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(TEST_STORY_CYCLES) })
   );
@@ -73,35 +68,23 @@ async function mockCycleApis(page, {
     route.fulfill({ status: 200, contentType: 'application/json', body: '{}' })
   );
   await page.route(/\/api\/chapters$/, route =>
-    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(currentCycles) })
+    route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(cycles) })
   );
-  // PUT /api/chapters/:id
   await page.route(/\/api\/chapters\/[^/]+$/, route => {
-    if (route.request().method() === 'PUT') {
-      const id = route.request().url().split('/').pop();
-      if (putStatus !== 200) {
-        return route.fulfill({ status: putStatus, contentType: 'application/json',
-          body: JSON.stringify({ error: 'SERVER_ERROR', message: 'Phase update failed' }) });
-      }
-      const body = JSON.parse(route.request().postData() || '{}');
-      const cycle = currentCycles.find(c => c._id === id) || { _id: id };
-      const updated = { ...cycle, ...body };
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(updated) });
-    }
-    // Other methods fall through
     route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
-  // DELETE /api/tracker_state
   await page.route(/\/api\/tracker_state$/, route => {
-    if (route.request().method() === 'DELETE') {
-      return route.fulfill({
-        status: trackerDeleteStatus,
-        contentType: 'application/json',
-        body: JSON.stringify({ deleted: trackerDeleteStatus === 200 ? 5 : 0 }),
-      });
-    }
     route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
   });
+  // Record EVERY non-GET request to ANY /api/ endpoint (not just the two retired ones), so a regression
+  // that writes somewhere new cannot slip past a test titled "makes no API write". Tests clear the list
+  // after the page has loaded and assert on what happens after that.
+  page.on('request', req => {
+    if (req.method() !== 'GET' && /\/api\//.test(req.url())) {
+      writes.push({ method: req.method(), url: req.url(), body: req.postData() });
+    }
+  });
+  return writes;
 }
 
 async function navigateToCycleTab(page) {
@@ -115,242 +98,42 @@ async function navigateToCycleTab(page) {
   }, { timeout: 5000 });
 }
 
-// ── Tests ────────────────────────────────────────────────────────────────────
+// ── Tests ────────────────────────────────────────────────
 
-test.describe('Cycle tab — phase buttons: rendering', () => {
+test.describe('Cycle tab — the phase is a read-only status', () => {
+  let writes;
   test.beforeEach(async ({ page }) => {
     await loginAsST(page);
-    await mockCycleApis(page);
+    writes = await mockCycleApis(page);
     await navigateToCycleTab(page);
   });
 
-  test('each cycle row renders three phase buttons', async ({ page }) => {
-    // All three cycles should each have Game, Downtime, Processing buttons
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    await expect(rows).toHaveCount(3);
+  test('every cycle row shows its phase as a status, with glyph and words', async ({ page }) => {
+    const status = page.locator('.cy-phase-readonly');
+    await expect(status).toHaveCount(TEST_CYCLES.length);
+    const texts = (await status.allTextContents()).map(t => t.trim());
+    // Order is by game number descending or ascending depending on the view, so compare as a set.
+    expect(texts.sort()).toEqual(['○ No phase set', '● Downtime', '● Game', '● Processing'].sort());
+  });
 
-    for (let i = 0; i < 3; i++) {
-      const row = rows.nth(i);
-      await expect(row.locator('button[data-phase="game"]')).toBeVisible();
-      await expect(row.locator('button[data-phase="downtime"]')).toBeVisible();
-      await expect(row.locator('button[data-phase="processing"]')).toBeVisible();
+  test('every row says the phase is set in TM Admin', async ({ page }) => {
+    await expect(page.locator('.cy-phase-readonly-note')).toHaveCount(TEST_CYCLES.length);
+    for (const t of await page.locator('.cy-phase-readonly-note').allTextContents()) {
+      expect(t.trim()).toBe('Set in TM Admin');
     }
   });
 
-  test('active phase button is disabled', async ({ page }) => {
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-
-    // cyc-001: game_phase='processing' → Processing button disabled
-    const row1 = rows.nth(0);
-    await expect(row1.locator('button[data-phase="processing"]')).toBeDisabled();
-    await expect(row1.locator('button[data-phase="game"]')).not.toBeDisabled();
-    await expect(row1.locator('button[data-phase="downtime"]')).not.toBeDisabled();
+  test('there are no phase buttons on the Cycle tab', async ({ page }) => {
+    await expect(page.locator('.cy-phase-btn')).toHaveCount(0);
+    await expect(page.locator('.cy-phase-group')).toHaveCount(0);
   });
 
-  test('legacy cycle (game_phase null) shows all buttons enabled', async ({ page }) => {
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-
-    // cyc-002: game_phase=null → all buttons enabled
-    const row2 = rows.nth(1);
-    await expect(row2.locator('button[data-phase="game"]')).not.toBeDisabled();
-    await expect(row2.locator('button[data-phase="downtime"]')).not.toBeDisabled();
-    await expect(row2.locator('button[data-phase="processing"]')).not.toBeDisabled();
-  });
-
-  test('game-phase cycle shows Game button disabled', async ({ page }) => {
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-
-    // cyc-003: game_phase='game' → Game button disabled
-    const row3 = rows.nth(2);
-    await expect(row3.locator('button[data-phase="game"]')).toBeDisabled();
-    await expect(row3.locator('button[data-phase="downtime"]')).not.toBeDisabled();
-    await expect(row3.locator('button[data-phase="processing"]')).not.toBeDisabled();
-  });
-});
-
-test.describe('Cycle tab — phase buttons: non-game transitions', () => {
-  test.beforeEach(async ({ page }) => {
-    await loginAsST(page);
-    await mockCycleApis(page);
-    await navigateToCycleTab(page);
-  });
-
-  test('clicking Downtime calls PUT with game_phase=downtime and disables that button', async ({ page }) => {
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    // cyc-001 is 'processing' — click Downtime
-    const row1 = rows.nth(0);
-    const dtBtn = row1.locator('button[data-phase="downtime"]');
-
-    let putBody = null;
-    await page.route(/\/api\/chapters\/cyc-001/, route => {
-      if (route.request().method() === 'PUT') {
-        putBody = JSON.parse(route.request().postData() || '{}');
-        return route.fulfill({ status: 200, contentType: 'application/json',
-          body: JSON.stringify({ _id: 'cyc-001', game_phase: 'downtime' }) });
-      }
-      route.continue();
-    });
-
-    await dtBtn.click();
-    await page.waitForTimeout(300);
-
-    expect(putBody).not.toBeNull();
-    expect(putBody.game_phase).toBe('downtime');
-    // Downtime button is now disabled (active)
-    await expect(row1.locator('button[data-phase="downtime"]')).toBeDisabled();
-    // Processing button is now enabled
-    await expect(row1.locator('button[data-phase="processing"]')).not.toBeDisabled();
-  });
-
-  test('clicking Processing calls PUT with game_phase=processing', async ({ page }) => {
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    // cyc-002 is legacy (null) — click Processing
-    const row2 = rows.nth(1);
-
-    let putBody = null;
-    await page.route(/\/api\/chapters\/cyc-002/, route => {
-      if (route.request().method() === 'PUT') {
-        putBody = JSON.parse(route.request().postData() || '{}');
-        return route.fulfill({ status: 200, contentType: 'application/json',
-          body: JSON.stringify({ _id: 'cyc-002', game_phase: 'processing' }) });
-      }
-      route.continue();
-    });
-
-    await row2.locator('button[data-phase="processing"]').click();
-    await page.waitForTimeout(300);
-
-    expect(putBody.game_phase).toBe('processing');
-    await expect(row2.locator('button[data-phase="processing"]')).toBeDisabled();
-  });
-
-  test('API failure on phase change shows inline error', async ({ page }) => {
-    // Override cycles PUT to fail
-    await page.route(/\/api\/chapters\//, route => {
-      if (route.request().method() === 'PUT') {
-        return route.fulfill({ status: 500, contentType: 'application/json',
-          body: JSON.stringify({ error: 'SERVER_ERROR', message: 'DB write failed' }) });
-      }
-      route.continue();
-    });
-
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    await rows.nth(1).locator('button[data-phase="processing"]').click();
-    await page.waitForTimeout(300);
-
-    await expect(page.locator('#cycle-content')).toContainText('Phase change failed');
-  });
-});
-
-test.describe('Cycle tab — Game phase: confirm + tracker reset', () => {
-  test('clicking Game shows a confirmation dialog', async ({ page }) => {
-    await loginAsST(page);
-    await mockCycleApis(page);
-    await navigateToCycleTab(page);
-
-    let dialogShown = false;
-    page.once('dialog', async dialog => {
-      dialogShown = true;
-      await dialog.dismiss();
-    });
-
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    // cyc-002 (legacy) — all buttons enabled, click Game
-    await rows.nth(1).locator('button[data-phase="game"]').click();
-    await page.waitForTimeout(300);
-
-    expect(dialogShown).toBe(true);
-  });
-
-  // INVERTED BY CM-4a (2026-08-16): the client no longer wipes the tracker.
-  // The wipe is performed by the server route that mutates the phase, in one
-  // transaction with the phase write, so accepting the confirm now makes ONE
-  // request - the PUT - and no DELETE at all. Behavioural coverage of the
-  // wipe itself: server/tests/cm-4a-phase-transition-enforcement.test.js.
-  test('accepting Game confirm sends the phase PUT and no client-side tracker DELETE', async ({ page }) => {
-    await loginAsST(page);
-    await mockCycleApis(page);
-    await navigateToCycleTab(page);
-
-    const calls = [];
-    await page.route(/\/api\/tracker_state$/, route => {
-      calls.push({ method: route.request().method(), url: route.request().url() });
-      route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ deleted: 3 }) });
-    });
-    await page.route(/\/api\/chapters\/cyc-002/, route => {
-      if (route.request().method() === 'PUT') {
-        calls.push({ method: 'PUT', url: route.request().url(), body: JSON.parse(route.request().postData() || '{}') });
-        return route.fulfill({ status: 200, contentType: 'application/json',
-          body: JSON.stringify({ _id: 'cyc-002', game_phase: 'game' }) });
-      }
-      route.continue();
-    });
-
-    page.once('dialog', async dialog => dialog.accept());
-
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    await rows.nth(1).locator('button[data-phase="game"]').click();
-    await page.waitForTimeout(500);
-
-    const trackerDelete = calls.find(c => c.method === 'DELETE');
-    const phasePut      = calls.find(c => c.method === 'PUT');
-    expect(phasePut).toBeDefined();
-    expect(phasePut.body.game_phase).toBe('game');
-    expect(trackerDelete).toBeUndefined();
-  });
-
-  test('dismissing Game confirm makes no API calls', async ({ page }) => {
-    await loginAsST(page);
-    await mockCycleApis(page);
-    await navigateToCycleTab(page);
-
-    let putCalled = false;
-    let deleteCalled = false;
-    await page.route(/\/api\/tracker_state$/, route => {
-      deleteCalled = true;
-      route.fulfill({ status: 200, contentType: 'application/json', body: '{"deleted":0}' });
-    });
-    await page.route(/\/api\/chapters\/cyc-002/, route => {
-      if (route.request().method() === 'PUT') { putCalled = true; }
-      route.continue();
-    });
-
-    page.once('dialog', async dialog => dialog.dismiss());
-
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    await rows.nth(1).locator('button[data-phase="game"]').click();
-    await page.waitForTimeout(300);
-
-    expect(deleteCalled).toBe(false);
-    expect(putCalled).toBe(false);
-    // Button states unchanged — Game still enabled for cyc-002
-    await expect(rows.nth(1).locator('button[data-phase="game"]')).not.toBeDisabled();
-  });
-
-  test('after accepted Game phase change, Game button becomes disabled', async ({ page }) => {
-    await loginAsST(page);
-    await mockCycleApis(page);
-    await navigateToCycleTab(page);
-
-    await page.route(/\/api\/tracker_state$/, route =>
-      route.fulfill({ status: 200, contentType: 'application/json', body: '{"deleted":2}' })
-    );
-    await page.route(/\/api\/chapters\/cyc-002/, route => {
-      if (route.request().method() === 'PUT') {
-        return route.fulfill({ status: 200, contentType: 'application/json',
-          body: JSON.stringify({ _id: 'cyc-002', game_phase: 'game' }) });
-      }
-      route.continue();
-    });
-
-    page.once('dialog', async dialog => dialog.accept());
-
-    const rows = page.locator('#cycle-content table').last().locator('tbody tr');
-    await rows.nth(1).locator('button[data-phase="game"]').click();
-    await page.waitForTimeout(500);
-
-    await expect(rows.nth(1).locator('button[data-phase="game"]')).toBeDisabled();
-    await expect(rows.nth(1).locator('button[data-phase="downtime"]')).not.toBeDisabled();
-    await expect(rows.nth(1).locator('button[data-phase="processing"]')).not.toBeDisabled();
+  test('clicking a phase status makes no API write and shows no dialog', async ({ page }) => {
+    let dialogs = 0;
+    page.on('dialog', async d => { dialogs += 1; await d.dismiss(); });
+    writes.length = 0; // only what happens from here on counts
+    for (const el of await page.locator('.cy-phase-readonly').all()) await el.click();
+    expect(dialogs).toBe(0);
+    expect(writes).toEqual([]);
   });
 });

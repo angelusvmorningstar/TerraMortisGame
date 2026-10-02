@@ -3,14 +3,15 @@
  * Static-grep assertions over server/routes/tracker.js and
  * public/js/admin/cycle-views.js.
  *
- * #1116 (2026-08-31): three assertions re-pointed at their current location.
- * CM-1 (#1028) moved the canonical phase-write into a shared module, so
- * `setGamePhase`/the `apiPut`+`game_phase` pairing no longer live in
- * cycle-views.js itself — they moved to downtime/db.js + cycle-phase.js.
- * `gold2` never lived in the JS; the active-phase highlight is a CSS rule in
- * admin-layout.css (this project's own convention: no bare hex, --gold2
- * token only). All three behaviours are confirmed still live, just relocated
- * — re-pointed rather than deleted, per this issue's own instruction.
+ * STORY tm-admin.27.1 (2026-10-02) retired both halves of what this file used to pin:
+ *   - DELETE /api/tracker_state (the bulk tracker wipe) was REMOVED. Nothing called it after CM-4a moved
+ *     the wipe into the phase PUT, and a one-request wipe of every character's live tracker is exactly
+ *     the hazard of the 2026-08-20 incident. The ST's deliberate slate reset is the Tracker tab's
+ *     Reset All (per-character PUTs behind a confirm).
+ *   - The Cycle tab's four phase buttons became a READ-ONLY status display. TM Admin is the only
+ *     writer of a Chapter's phase, and this app's PUT /api/chapters/:id refuses the phase fields.
+ * The assertions below pin the new state. Behavioural coverage of the refusal lives in
+ * cm-4a-phase-transition-enforcement.test.js.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -21,92 +22,69 @@ const CYCLE_VIEWS  = fs.readFileSync('../public/js/admin/cycle-views.js', 'utf8'
 const DOWNTIME_DB  = fs.readFileSync('../public/js/downtime/db.js', 'utf8');
 const ADMIN_LAYOUT = fs.readFileSync('../public/css/admin-layout.css', 'utf8');
 
-describe('epic.708.3 — tracker.js: DELETE /api/tracker_state', () => {
-  it('has router.delete route', () => {
-    expect(TRACKER).toContain('router.delete');
+const codeOnly = (src) => src.split('\n').filter(l => !l.trim().startsWith('*') && !l.trim().startsWith('//')).join('\n');
+
+describe('epic.708.3 — tracker.js: the bulk DELETE /api/tracker_state route is gone (27.1)', () => {
+  it('has no router.delete route', () => {
+    expect(codeOnly(TRACKER)).not.toContain('router.delete(');
   });
 
-  it('calls deleteMany on the tracker collection', () => {
-    expect(TRACKER).toContain('deleteMany');
+  it('never calls deleteMany on the tracker collection', () => {
+    expect(codeOnly(TRACKER)).not.toContain('deleteMany');
   });
 
-  it('guards with FORBIDDEN for non-ST/dev roles', () => {
-    expect(TRACKER).toContain("'FORBIDDEN'");
-  });
-
-  it('returns deleted count in response', () => {
-    expect(TRACKER).toContain('deleted');
-  });
-
-  it('checks for st and dev roles', () => {
-    expect(TRACKER).toContain("'st'");
-    expect(TRACKER).toContain("'dev'");
+  it('the Tracker tab still has its own deliberate per-character Reset All', () => {
+    const CLIENT_TRACKER = fs.readFileSync('../public/js/game/tracker.js', 'utf8');
+    expect(CLIENT_TRACKER).toContain('export async function trackerReset');
+    expect(CLIENT_TRACKER).toContain('Reset all characters to zero Vitae');
   });
 });
 
-describe('epic.708.3 — cycle-views.js: phase control UI', () => {
-  it('imports apiPut from api.js', () => {
+describe('epic.708.3 — cycle-views.js: phase is a read-only status (27.1)', () => {
+  it('imports apiPut from api.js (other Cycle tab controls still write)', () => {
     expect(CYCLE_VIEWS).toMatch(/import[^;]*apiPut[^;]*from/);
   });
 
-  it('CM-1 (#1028): the canonical phase-writer setCyclePhase exists in downtime/db.js, not cycle-views.js', () => {
-    // Relocated from cycle-views.js's own (since-removed) setGamePhase so
-    // every API caller is bound by the same writer, not just this button.
+  it('the canonical phase-writer setCyclePhase still exists in downtime/db.js, but the Cycle tab no longer uses it', () => {
+    // setCyclePhase remains for the (unreachable) downtime views; this tab no longer calls it.
     expect(DOWNTIME_DB).toContain('export async function setCyclePhase');
-    expect(CYCLE_VIEWS).toContain('setCyclePhase');
+    expect(CYCLE_VIEWS).not.toContain('setCyclePhase');
   });
 
-  // INVERTED BY CM-4a (2026-08-16), kept rather than deleted so the intent
-  // stays on the record. The wipe moved off the client entirely: it is now
-  // performed by the server route that mutates chapters.phase, in one
-  // transaction with the phase write, so every API caller is bound by it and
-  // not just this one button. The DELETE route itself is untouched and still
-  // asserted above; what changed is who calls it. Behavioural coverage lives
-  // in cm-4a-phase-transition-enforcement.test.js.
-  it('does NOT wipe the tracker client-side any more (the server owns it)', () => {
+  it('does NOT wipe the tracker client-side (the server never does either)', () => {
     expect(CYCLE_VIEWS).not.toContain('/api/tracker_state');
   });
 
-  it('shows confirm dialog before game phase transition', () => {
-    expect(CYCLE_VIEWS).toContain('confirm(');
+  it('has no phase buttons, no phase write and no confirm dialog for a phase change', () => {
+    const code = codeOnly(CYCLE_VIEWS);
+    expect(code).not.toContain('cy-phase-btn');
+    expect(code).not.toContain('writePhase');
+    expect(code).not.toContain('phaseToggleTarget');
+    expect(code).not.toContain('Phase change failed');
+    expect(code).not.toContain('will reset the live tracker');
   });
 
-  it('uses data-phase attribute on phase buttons (dataset.phase, same contract)', () => {
-    // Same DOM attribute (`.dataset.phase` renders as `data-phase="..."`),
-    // just spelled the JS-property way rather than the literal string.
-    expect(CYCLE_VIEWS).toContain('dataset.phase');
+  it('renders the phase as a status: glyph plus words, with the note that TM Admin sets it', () => {
+    const start = CYCLE_VIEWS.indexOf('function buildPhaseCell');
+    expect(start).toBeGreaterThan(-1);
+    const body = CYCLE_VIEWS.slice(start, CYCLE_VIEWS.indexOf('// ── Prep Access section'));
+    expect(body).toContain('cy-phase-readonly');
+    expect(body).toContain('No phase set');
+    expect(body).toContain('Set in TM Admin');
+    expect(body).toContain('Phase is set in TM Admin');
+    // Glyph plus words, never colour alone: both a filled and a hollow marker are used.
+    expect(body).toContain('●');
+    expect(body).toContain('○');
   });
 
-  it('the relocated phase-writer calls apiPut with game_phase on cycle update', () => {
-    // apiPut + the game_phase field are still paired, just in db.js/
-    // cycle-phase.js now (CM-1's single-writer discipline) rather than here.
-    expect(DOWNTIME_DB).toContain('apiPut');
-    expect(DOWNTIME_DB).toContain('game_phase');
-  });
-
-  it('highlights active phase with gold2 colour (CSS token, not JS)', () => {
-    // No bare hex per this project's own convention — the highlight is the
-    // --gold2 custom property on .cy-phase-btn.is-active in admin-layout.css.
-    expect(ADMIN_LAYOUT).toMatch(/\.cy-phase-btn\.is-active\s*\{[^}]*--gold2/);
-  });
-
-  it('shows inline error on phase change failure', () => {
-    expect(CYCLE_VIEWS).toContain('Phase change failed');
-  });
-
-  it('renders all three phase labels as buttons', () => {
-    expect(CYCLE_VIEWS).toContain("'game'");
-    expect(CYCLE_VIEWS).toContain("'downtime'");
-    expect(CYCLE_VIEWS).toContain("'processing'");
+  it('the read-only status has its own CSS, using the --txt3 token and no bare hex', () => {
+    expect(ADMIN_LAYOUT).toMatch(/\.cy-phase-readonly--none\s*\{[^}]*var\(--txt3\)/);
+    expect(ADMIN_LAYOUT).toMatch(/\.cy-phase-readonly-note\s*\{[^}]*var\(--txt3\)/);
   });
 
   it('#1002: cycle label cell derives the feeds-into span from game_number', () => {
     // The 2026-07-16 incident this issue tracks was exactly this confusion —
     // the cycle name alone invites the wrong flip. Derived text, not stored.
     expect(CYCLE_VIEWS).toMatch(/DT after Game \$\{cy\.game_number\} . feeds Game \$\{cy\.game_number \+ 1\}/);
-  });
-
-  it('#1002: the game-phase button title states what the flip means', () => {
-    expect(CYCLE_VIEWS).toContain('Open session play for the downtimes submitted in this cycle');
   });
 });

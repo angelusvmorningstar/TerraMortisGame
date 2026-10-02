@@ -1,6 +1,6 @@
 import { apiGet, apiPost, apiDelete, apiPut, apiPatch } from '../data/api.js';
-import { createCycle, updateCycle, deleteCycle, deriveCycleStatus, getSubmissionsForCycle, zeroSubmissionFlipWarning, zeroSubmissionFlipMessage, setCyclePhase } from '../downtime/db.js';
-import { resetOnTransition, transitionFromPhase } from '../downtime/cycle-phase.js';
+import { createCycle, updateCycle, deleteCycle, deriveCycleStatus, getSubmissionsForCycle } from '../downtime/db.js';
+import { transitionFromPhase } from '../downtime/cycle-phase.js';
 
 const PHASE_LABELS = {
   game:       'Game',
@@ -8,13 +8,6 @@ const PHASE_LABELS = {
   processing: 'Processing',
   prep:       'Prep',
 };
-
-// CM-1 (#1028): buttons follow the cycle order (cycle-model.md Rev 2 section
-// 1): downtime, processing, prep, game. Prep is the game-prep window in which
-// feeding is open. CM-5a: entering PREP is what resets the live tracker (once
-// per chapter, from a preceding phase only); prep -> game is non-destructive
-// so the prep week's confirmed feeds survive into the session.
-const PHASES = ['downtime', 'processing', 'prep', 'game'];
 
 // The phase a row's UI reflects. CM-4a: the resolution order itself now lives
 // in the pure module as transitionFromPhase, because the server enforces the
@@ -45,30 +38,6 @@ function declaredPhase(cy) {
 
 function declaresPhase(cy) {
   return !!declaredPhase(cy);
-}
-
-/**
- * The phase a phase BUTTON writes when clicked, and (as a side effect of the
- * same comparison) whether it renders active.
- *
- * CM-4a review finding P2 (2026-08-16). The button's own toggle must read the
- * NARROW declared phase, not uiPhase. uiPhase widened in CM-4a so that the
- * client's wipe dialog asks the same question the server's enforcement asks
- * (AC3) - which is right for the transition decision and wrong here. On a real
- * legacy shape like `{status:'active'}` with no phase fields at all, uiPhase
- * resolves to 'downtime', so the Downtime button rendered active and clicking
- * it wrote `phase: null` (a clear) instead of `phase: 'downtime'` - the
- * opposite of the ST's intent - and because the re-derived status stayed
- * 'active' the button re-lit immediately, making that phase impossible to set
- * from the UI at all. Same shape for status 'closed' -> Processing and status
- * 'game' -> Game.
- *
- * Exported so this decision is driven directly by a test rather than pinned by
- * a source regex; this project has no jsdom, so the click handler itself is
- * not reachable from a unit test (oxp.5 convention).
- */
-export function phaseToggleTarget(cy, phase) {
-  return declaredPhase(cy) === phase ? null : phase;
 }
 
 // Module-level view state so the status ribbon can refresh after any
@@ -376,124 +345,29 @@ function buildStoryCyclesPanel(storyCycles, allCycles = view.cycles) {
   return wrap;
 }
 
-// ── Phase controls ───────────────────────────────────────────────────────────
-
-// Write a phase to a cycle. `phaseOrNull === null` clears the phase (neutral).
+// ── Phase (read-only) ────────────────────────────────────────────────────────
 //
-// This function no longer resets the live tracker. CM-4a moved the wipe into
-// the server route that mutates the phase (PUT /api/chapters/:id), so
-// it commits in one transaction with the phase write and binds every API
-// caller, not just this button. What stays here is the ST-facing safety
-// surface: the #1003 zero-submission flip warning, and the confirmation
-// dialog shown when resetOnTransition says this transition is destructive
-// (entering prep from a preceding phase, or entering game from anywhere
-// except prep; clearing to neutral never resets). Cancelling either dialog
-// aborts before anything is written, and returns false.
-//
-// The client and the server ask the same question of the same reader -
-// resetOnTransition(transitionFromPhase(cycle), toPhase), via uiPhase here -
-// which removes the class of divergence AC3 exists for. What is GUARANTEED,
-// though, is only the server side: the wipe rule is enforced in the route that
-// writes the phase, so it holds no matter what this dialog said or whether it
-// was shown at all. This dialog is best-effort accuracy on top of that. `cy`
-// is the cached row object and the Cycle tab holds no WebSocket subscription,
-// so a concurrent writer between page load and click can make the dialog stale
-// in either direction (warned when no wipe follows, or silent when one does).
-// That is a UX-accuracy risk, not a data-safety one - since CM-4a the server
-// no longer depends on the client having shown an accurate warning. A
-// re-fetch-before-dialog fix is deferred (see specs/deferred-work.md, D2).
-// Exported for direct test drive: CM-4a review finding P4 replaced a source-
-// text assertion ("the body mentions 'tracker reset'") with a real one that
-// rejects the phase write and reads the surfaced error, because the old form
-// passed on doc-comment prose alone.
-export async function writePhase(cy, phaseOrNull) {
-  if (phaseOrNull === 'game') {
-    // #1003: warn if flipping an empty cycle to game while another live cycle
-    // holds submissions (feeding pulls from the game-phase cycle).
-    const warn = await zeroSubmissionFlipWarning(
-      cy, view.cycles || [], async id => (await getSubmissionsForCycle(id)).length);
-    if (warn && !confirm(zeroSubmissionFlipMessage(warn))) return false;
-  }
-  // CM-5a: the slate-wipe moves to PREP entry, so feed rolls made during the
-  // prep week survive into game (prep -> game is non-destructive). Entering
-  // game from any non-prep state keeps the legacy reset. Cancelling the
-  // dialog aborts the phase change entirely.
-  const willReset = resetOnTransition(uiPhase(cy), phaseOrNull);
-  if (willReset) {
-    const label = PHASE_LABELS[phaseOrNull];
-    if (!confirm(`Setting to ${label} phase will reset the live tracker (all characters reload with default states). Continue?`)) return false;
-  }
-  // CM-1 (#1028): the canonical writer sets all three representations in one
-  // PUT (phase + game_phase + status, per the cycle-phase.js mirror table),
-  // absorbing the #1001 status-alongside fix and extending it to the new
-  // `phase` field. `null` clears to neutral, preserving #918 semantics.
-  // CM-4a: this single request now carries the tracker reset with it, so a
-  // failure means neither happened - name the tracker reset when one was due,
-  // because that is the part the ST was warned about and will look for.
-  try {
-    await setCyclePhase(cy, phaseOrNull);
-  } catch (err) {
-    throw new Error(willReset
-      ? `the tracker reset did not run (${err.message})`
-      : err.message);
-  }
-  return true;
-}
-
-// #1002: the game-phase flip specifically is the one the 2026-07-16 incident
-// was about — make what it means unmistakable in the affordance itself,
-// rather than relying on the cycle label span above to be read first.
-function phaseButtonTitle(phase) {
-  if (phase === 'game') {
-    return 'Open session play for the downtimes submitted in this cycle';
-  }
-  return `Set ${PHASE_LABELS[phase]} phase`;
-}
-
+// Story tm-admin.27.1 (2026-10-02): this tab no longer sets a Chapter's phase. TM Admin is the only
+// writer of phase (PUT /api/chapters/:id/phase there), and TM Game's PUT /api/chapters/:id now
+// refuses `phase`, `game_phase` and `status` with a 409. The four phase buttons, their confirm dialogs
+// and the tracker-wipe warning that used to sit here are removed with it. What remains is a status
+// display: glyph plus words, never colour alone. A slate reset between games is the ST's deliberate
+// Reset All on the Tracker tab.
 function buildPhaseCell(cy) {
   const td = document.createElement('td');
   td.className = 'cy-phase-cell';
 
-  const group = document.createElement('div');
-  group.className = 'cy-phase-group';
-  td.appendChild(group);
+  const phase = uiPhase(cy);
+  const status = document.createElement('span');
+  status.className = 'cy-phase-readonly' + (phase ? ` cy-phase-readonly--${phase}` : ' cy-phase-readonly--none');
+  status.textContent = (phase ? '● ' : '○ ') + (phase ? PHASE_LABELS[phase] : 'No phase set');
+  status.title = 'Phase is set in TM Admin';
+  td.appendChild(status);
 
-  const errEl = document.createElement('span');
-  errEl.className = 'cy-error cy-error--inline';
-
-  // CM-4a review P2: the buttons read declaredPhase (via phaseToggleTarget),
-  // NOT uiPhase. uiPhase's widened read belongs to the wipe/dialog decision
-  // only; using it here inverted the toggle on legacy status-only cycles.
-  PHASES.forEach(phase => {
-    const isActive = declaredPhase(cy) === phase;
-    const btn = document.createElement('button');
-    btn.className = 'cy-phase-btn' + (isActive ? ' is-active' : '');
-    btn.textContent = PHASE_LABELS[phase];
-    btn.dataset.phase = phase;
-    btn.title = isActive ? 'Click to clear this phase' : phaseButtonTitle(phase);
-
-    btn.addEventListener('click', async () => {
-      errEl.classList.remove('is-visible');
-      // Active phase toggles OFF to neutral; otherwise switch to the clicked phase.
-      const target = phaseToggleTarget(cy, phase);
-      try {
-        const ok = await writePhase(cy, target);
-        if (!ok) return;
-        group.querySelectorAll('.cy-phase-btn').forEach(b => {
-          const active = b.dataset.phase === declaredPhase(cy);
-          b.classList.toggle('is-active', active);
-          b.title = active ? 'Click to clear this phase' : phaseButtonTitle(b.dataset.phase);
-        });
-        renderRibbon();
-      } catch (err) {
-        errEl.textContent = 'Phase change failed: ' + err.message;
-        errEl.classList.add('is-visible');
-      }
-    });
-    group.appendChild(btn);
-  });
-
-  td.appendChild(errEl);
+  const note = document.createElement('span');
+  note.className = 'cy-phase-readonly-note';
+  note.textContent = 'Set in TM Admin';
+  td.appendChild(note);
   return td;
 }
 

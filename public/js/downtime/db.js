@@ -224,6 +224,14 @@ export async function getFeedingCycle() {
 }
 
 /**
+ * RETIRED by Story tm-admin.27.1 (2026-10-02): TM Game no longer sets a Chapter's phase. TM Admin is the
+ * only phase writer, and PUT /api/chapters/:id answers 409 PHASE_CONTROLLED_BY_TM_ADMIN to the body this
+ * function sends (so does `closeCycle` and `openGamePhase`, which call it). It also no longer matters that
+ * the server used to wipe `tracker_state` on a resetting transition: it does not. Nothing in the live
+ * admin UI reaches this (the Downtime domain that imported it is commented out of admin.html); the code
+ * is kept only as reference for that unrouted module and will fail immediately if revived.
+ *
+ * (Original description follows.)
  * THE canonical phase writer (CM-1). Every phase transition goes through here:
  * one PUT carrying the new `phase` plus its legacy mirror pair (built by
  * cycle-phase.js buildPhaseUpdate, which also defends the trio against

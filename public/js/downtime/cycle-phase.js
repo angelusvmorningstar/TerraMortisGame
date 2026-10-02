@@ -185,6 +185,10 @@ export const PHASE_FIELDS = Object.freeze(['phase', 'game_phase', 'status']);
 /**
  * A shallow copy of `doc` with the mirror trio removed.
  *
+ * STORY 27.1 NOTE (2026-10-02): the server no longer wipes tracker_state on any transition and TM Game no
+ * longer writes a phase at all, so the hazard described below is gone; this helper now only keeps
+ * `buildPhaseUpdate`'s `extra` free of the trio. The history below explains why it exists.
+ *
  * CM-4a review (P1, 2026-08-16): the phase write now carries a destructive
  * consequence (the server wipes tracker_state on a resetting transition), so a
  * body that merely RESTORES data must not carry phase fields at all. Note that

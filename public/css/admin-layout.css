@@ -10077,14 +10077,10 @@ html:not([data-theme="dark"]) .btn-danger {
 
 /* Phase cell */
 .cy-phase-cell { white-space: nowrap; }
-.cy-phase-group { display: inline-flex; gap: 4px; }
-.cy-phase-btn {
-  font-size: 12px; padding: 4px 12px; border-radius: 4px; cursor: pointer;
-  background: var(--surf2); color: var(--accent); border: 1px solid var(--accent-a40);
-}
-.cy-phase-btn:hover { background: var(--surf3); }
-.cy-phase-btn.is-active { background: var(--accent-a8); border-color: var(--gold2); color: var(--gold2); font-weight: 600; }
-
+/* Story tm-admin.27.1: the phase is a read-only status here; TM Admin sets it. Glyph plus words, never colour alone. */
+.cy-phase-readonly { font-weight: 600; margin-right: 8px; }
+.cy-phase-readonly--none { color: var(--txt3); font-weight: 400; }
+.cy-phase-readonly-note { font-size: 0.85em; color: var(--txt3); }
 /* Detail rows (prep access / attendance) */
 .cy-detail-row.is-hidden { display: none; }
 .cy-detail-cell { padding: 4px 12px 12px; background: var(--surf2); }

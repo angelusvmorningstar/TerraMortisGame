@@ -356,34 +356,6 @@ describe('cm1 — wiring', () => {
     expect(ROUTES).toMatch(/confirmBlocked[\s\S]{0,200}?\['downtime',\s*'prep',\s*'game'\]\.includes\(cyclePhase\(cycle\)\)/);
   });
 
-  it('the admin phase buttons include Prep and route through setCyclePhase', () => {
-    expect(VIEWS).toContain("['downtime', 'processing', 'prep', 'game']");
-    expect(VIEWS).toContain('await setCyclePhase(cy, phaseOrNull)');
-  });
-
-  // SUPERSEDED BY CM-5a (2026-08-10). This guard used to assert "the tracker
-  // reset fires only on entering game, never prep". CM-5a deliberately moved
-  // the reset to prep entry so the prep week's confirmed feeds survive into
-  // the game. The old assertions still PASSED against the new code (the
-  // `phaseOrNull === 'game'` string survives as the zero-submission guard, and
-  // the new code never spells `phaseOrNull === 'prep'`), i.e. the guard had
-  // gone toothless while certifying the opposite of shipped behaviour - caught
-  // by review. Inverted rather than deleted, so the intent stays on the record.
-  // INVERTED AGAIN BY CM-4a (2026-08-16): the client no longer performs the
-  // reset at all. It stayed a client-side DELETE right up to CM-4a, which
-  // moved the wipe into the server route that mutates the phase (one
-  // transaction, every API caller bound). The decision the client still makes
-  // is which dialog to show, and it still makes it through resetOnTransition
-  // rather than a hardcoded game check - which is what this test was always
-  // really guarding. Behaviour of the wipe itself is proven in
-  // cm-4a-phase-transition-enforcement.test.js, against the real route.
-  it('the tracker reset is decided by resetOnTransition, NOT by a hardcoded game check', () => {
-    expect(VIEWS).toContain('resetOnTransition(uiPhase(cy), phaseOrNull)');
-    // Zero client-side tracker wipes: exactly one executor, and it is the server.
-    expect(VIEWS.split("apiDelete('/api/tracker_state')").length - 1).toBe(0);
-    expect(VIEWS).not.toContain('/api/tracker_state');
-  });
-
   it('the feeding tab reads through getFeedingCycle', () => {
     expect(FEED).toContain('getFeedingCycle');
     expect(FEED).not.toContain('getGamePhaseCycle');

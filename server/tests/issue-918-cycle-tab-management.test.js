@@ -1,24 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import fs from 'fs';
-
-// cycle-views.js's only non-pure dependency is data/api.js (directly and via
-// downtime/db.js), which touches `location`/`localStorage` at module load.
-// Mocking it lets the phase-toggle assertion below be DRIVEN rather than
-// pinned to a source snippet that has now drifted three times (CM-4a review
-// finding P2, 2026-08-16).
-vi.mock('../../public/js/data/api.js', () => ({
-  apiGet: vi.fn(async () => []),
-  apiPut: vi.fn(async () => ({})),
-  apiPost: vi.fn(async () => ({})),
-  apiPatch: vi.fn(async () => ({})),
-  apiDelete: vi.fn(async () => ({})),
-  apiRaw: vi.fn(async () => ({})),
-  apiBase: () => '',
-  headers: () => ({}),
-}));
-
-import { resetOnTransition } from '../../public/js/downtime/cycle-phase.js';
-import { phaseToggleTarget } from '../../public/js/admin/cycle-views.js';
 
 // cm-2b: the cycle DELETE route moved with cyclesRouter into chapters.js.
 const DOWNTIME = fs.readFileSync('../server/routes/chapters.js', 'utf8');
@@ -92,37 +73,22 @@ describe('issue-918 — cycle-views.js wiring', () => {
     expect(VIEWS).toContain('cy-ribbon');
   });
 
-  // Toggle semantics unchanged, for the FOURTH time; only the reader keeps
-  // moving. #918 hardcoded it, CM-1 (#1028) moved the read to uiPhase(), and
-  // CM-4a's review (finding P2, 2026-08-16) moved it again - to the narrow
-  // declaredPhase, via the exported phaseToggleTarget - because uiPhase widened
-  // to resolve the legacy `status` for the wipe decision, and a button reading
-  // that widened value rendered active on a legacy `{status:'active'}` cycle
-  // and wrote `phase: null` when clicked instead of `phase: 'downtime'`.
-  //
-  // This assertion was left red by CM-1 and reached production unnoticed
-  // (caught by CM-5a's review, 2026-08-10), so it is now written as BEHAVIOUR
-  // rather than as a source snippet: the shape it pinned has drifted three
-  // times, and driving the real function cannot drift.
-  it('phase toggle clears to neutral (active phase → null)', () => {
-    expect(phaseToggleTarget({ phase: 'game' }, 'game')).toBe(null);
-    expect(phaseToggleTarget({ game_phase: 'downtime' }, 'downtime')).toBe(null);
-    // ...and a non-active button still sets its own phase.
-    expect(phaseToggleTarget({ phase: 'game' }, 'prep')).toBe('prep');
+  // STORY tm-admin.27.1 (2026-10-02): the two assertions that stood here pinned the phase TOGGLE
+  // (phaseToggleTarget) and the client-side tracker-reset guard (resetOnTransition(uiPhase(cy),
+  // phaseOrNull)). Both are gone with the buttons: this tab no longer sets a phase at all (TM Admin does,
+  // and PUT /api/chapters/:id refuses the phase fields), so there is no toggle to clear and no wipe to
+  // guard. The intent that "clearing a phase never wipes the tracker" now holds more strongly: nothing in
+  // this app wipes it on a phase change. Behavioural coverage: cm-4a-phase-transition-enforcement.test.js.
+  it('the Cycle tab has no phase toggle any more: the phase cell is a read-only status', () => {
+    expect(VIEWS).not.toContain('phaseToggleTarget');
+    expect(VIEWS).not.toContain('writePhase');
+    expect(VIEWS).toContain('cy-phase-readonly');
   });
 
-  // Intent unchanged and still true: clearing to neutral never wipes the
-  // tracker. The MECHANISM has now moved three times - CM-1 kept the
-  // hardcoded game check, CM-5a replaced it with resetOnTransition, and CM-4a
-  // moved the wipe itself off the client into the cycles PUT route. The
-  // predicate assertions below are the durable part; the client-side DELETE
-  // this used to locate no longer exists, so its absence is asserted instead.
-  it('clearing a phase does NOT reset the tracker', () => {
-    expect(resetOnTransition('game', null)).toBe(false);
-    expect(resetOnTransition('prep', null)).toBe(false);
-    const guardIdx = VIEWS.indexOf('resetOnTransition(uiPhase(cy), phaseOrNull)');
-    expect(guardIdx).toBeGreaterThan(-1);
+  it('the Cycle tab never resets or deletes the tracker', () => {
+    expect(VIEWS).not.toContain('resetOnTransition');
     expect(VIEWS).not.toContain("apiDelete('/api/tracker_state')");
+    expect(VIEWS).not.toContain('/api/tracker_state');
   });
 
   it('inline-edits the label via updateCycle', () => {
@@ -169,8 +135,13 @@ describe('issue-918 — admin-layout.css cycle classes', () => {
   it('defines the neutral phase chip', () =>
     expect(CSS).toContain('.cy-phase--none'));
 
-  it('defines toggleable phase buttons', () => {
-    expect(CSS).toContain('.cy-phase-btn');
-    expect(CSS).toContain('.cy-phase-btn.is-active');
+  // Story tm-admin.27.1 (2026-10-02): the toggleable phase buttons are gone (the phase is a read-only
+  // status; TM Admin sets it), so their CSS was removed and the read-only status classes are pinned instead.
+  it('defines the read-only phase status, and no longer defines phase buttons', () => {
+    expect(CSS).toContain('.cy-phase-readonly');
+    expect(CSS).toContain('.cy-phase-readonly--none');
+    expect(CSS).toContain('.cy-phase-readonly-note');
+    expect(CSS).not.toContain('.cy-phase-btn');
+    expect(CSS).not.toContain('.cy-phase-group');
   });
 });

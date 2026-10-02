@@ -21,7 +21,6 @@ import { ObjectId } from 'mongodb';
 import { setupDb, teardownDb } from './helpers/db-setup.js';
 import { getDb, getCollection } from '../db.js';
 import { createTestApp, stUser, playerUser } from './helpers/test-app.js';
-import { isTransactionsUnsupported } from '../routes/chapters.js';
 import {
   chapterFkFilter,
   chapterFkQueryParam,
@@ -141,26 +140,6 @@ describe('cm-2b — /api/downtime_cycles is genuinely gone', () => {
     for (const f of ['./index.js', './tests/helpers/test-app.js']) {
       expect(fs.readFileSync(f, 'utf8')).not.toContain("'/api/downtime_cycles'");
     }
-  });
-});
-
-describe('cm-2b — isTransactionsUnsupported moved with cyclesRouter', () => {
-  // Correction 2: this helper is EXPORTED and imported from outside the file it
-  // lived in. Moving it silently broke cm-4a's suite once already; this pins the
-  // new location so the next move cannot do it quietly.
-  it('is exported from routes/chapters.js', () => {
-    expect(typeof isTransactionsUnsupported).toBe('function');
-    expect(isTransactionsUnsupported(new Error(
-      'Transaction numbers are only allowed on a replica set member or mongos'))).toBe(true);
-    expect(isTransactionsUnsupported(new Error('unrelated'))).toBe(false);
-  });
-
-  it('is no longer exported from routes/downtime.js', async () => {
-    const mod = await import('../routes/downtime.js');
-    expect(mod.isTransactionsUnsupported).toBeUndefined();
-    expect(mod.cyclesRouter).toBeUndefined();
-    expect(mod.submissionsRouter).toBeTruthy();
-    expect(mod.projectInvitationsRouter).toBeTruthy();
   });
 });
 

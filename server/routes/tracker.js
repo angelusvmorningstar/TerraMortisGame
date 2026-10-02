@@ -266,12 +266,9 @@ router.post('/:character_id/spend', async (req, res) => {
   res.json(result);
 });
 
-// DELETE /api/tracker_state — ST/dev only, bulk wipe for game-start reset
-router.delete('/', async (req, res) => {
-  const role = req.user?.role;
-  if (role !== 'st' && role !== 'dev') return res.status(403).json({ error: 'FORBIDDEN' });
-  const result = await col().deleteMany({});
-  res.json({ deleted: result.deletedCount });
-});
+// Story tm-admin.27.1 (2026-10-02): the bulk wipe route DELETE /api/tracker_state was REMOVED. Nothing in
+// the app called it after CM-4a moved the wipe into the phase PUT, and a one-request wipe of every
+// character's live tracker is exactly the hazard the 2026-08-20 incident was. The ST's deliberate slate
+// reset is the Tracker tab's Reset All (per-character PUTs behind a confirm), which is unchanged.
 
 export default router;

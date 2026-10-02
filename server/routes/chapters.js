@@ -1,13 +1,13 @@
 import { Router } from 'express';
 import { ObjectId } from 'mongodb';
-import { getCollection, getClient } from '../db.js';
+import { getCollection } from '../db.js';
 import { requireRole } from '../middleware/auth.js';
 import { validate } from '../middleware/validate.js';
 import { downtimeCycleSchema } from '../schemas/downtime_submission.schema.js';
 // CM-1 (#1028): the pure phase contract, shared verbatim with the client and
 // the tests (public/js/downtime/cycle-phase.js has no I/O and no browser
 // globals, so the server imports it directly).
-import { CYCLE_PHASE_SEQUENCE, cyclePhase, resetOnTransition, transitionFromPhase } from '../../public/js/downtime/cycle-phase.js';
+import { CYCLE_PHASE_SEQUENCE, cyclePhase } from '../../public/js/downtime/cycle-phase.js';
 // cm-2b dual-read shim for the submission Chapter FK. See that module's header.
 import { chapterFkFilter } from '../helpers/chapter-fk.js';
 
@@ -40,9 +40,9 @@ import { chapterFkFilter } from '../helpers/chapter-fk.js';
  * This file took `cyclesRouter` and the five helpers only it uses:
  * `namedFinaleRefusal`, `RouteResponse`, `isTransactionsUnsupported`,
  * `trackerState` and `runPhaseTransition` (plus the `JOINT_ELIGIBLE_ACTIONS`
- * constant). `isTransactionsUnsupported` is the one of those five that is
- * EXPORTED and imported from outside — `tests/cm-4a-phase-transition-enforcement.test.js`
- * imports it, and that import was re-pointed to this file, not left dangling.
+ * constant). Story tm-admin.27.1 (2026-10-02) later REMOVED `RouteResponse`,
+ * `isTransactionsUnsupported`, `trackerState` and `runPhaseTransition`: this app
+ * no longer sets a Chapter's phase (see the PUT /:id comment below).
  * `parseId` and the `submissions()` accessor are small enough to define in both
  * files rather than lift into a shared module for two callers.
  *
@@ -602,120 +602,39 @@ cyclesRouter.post('/:cycleId/joint_projects/:jointId/participants/:charId/acknow
   res.json({ joint: updatedJoint, acknowledged_at: now });
 });
 
-// Local early-exit carrier for the transactional branch below. Thrown rather
-// than returned so `withTransaction` aborts instead of committing a partial
-// change, and answered after the session closes. Defined locally, as
-// office-seats.js and office-actions.js each define their own: office-seats'
-// comment invites a shared module "the first time a THIRD route needs it",
-// and this is that third route - but lifting it would edit two transactional
-// routes CM-4a otherwise does not touch, for no behavioural gain. Flagged for
-// the reviewer rather than done silently.
-class RouteResponse extends Error {
-  constructor(statusCode, body) { super(body.message); this.statusCode = statusCode; this.body = body; }
-}
-
-const trackerState = () => getCollection('tracker_state');
-
-/**
- * CM-4a: does this error mean the server cannot do transactions at all?
- *
- * Narrow on purpose. Production is Render -> Atlas, always a replica set, so
- * this only ever fires for a developer running a standalone local `mongod`
- * (which several suites already expect). Swallowing anything broader would
- * turn a real transaction failure into a silent non-atomic write, which is
- * the exact defect this story exists to remove.
- */
-export function isTransactionsUnsupported(err) {
-  if (!err) return false;
-  const msg = String(err.message || '');
-  // The standalone-mongod refusal. Matched on the message alone: the driver
-  // reports it with code 20, but a code-and-message branch above this one
-  // could never be the deciding return (CM-4a review finding P6), so the one
-  // check does both jobs.
-  if (/Transaction numbers are only allowed on a replica set member or mongos/i.test(msg)) return true;
-  if (err.name === 'MongoCompatibilityError' && /transaction/i.test(msg)) return true;
-  if (/transactions are not supported/i.test(msg)) return true;
-  return false;
-}
-
-/**
- * The phase write plus the transition's tracker consequence. Called once
- * inside a transaction (`session` set) and, only if this deployment cannot do
- * transactions at all, once without one.
- *
- * The wipe rule itself is NOT decided here - `resetOnTransition` in
- * public/js/downtime/cycle-phase.js is the one implementation of the matrix,
- * and `transitionFromPhase` is the one reader of the phase being moved from.
- */
-async function runPhaseTransition(oid, updates, session) {
-  const opts = session ? { session } : {};
-
-  const existing = await chapters().findOne({ _id: oid }, opts);
-  if (!existing) throw new RouteResponse(404, { error: 'NOT_FOUND', message: 'Cycle not found' });
-
-  const wipe = resetOnTransition(transitionFromPhase(existing), updates.phase);
-
-  // Inside a transaction both writes commit together, so their order carries
-  // no risk and the wipe goes last. WITHOUT one (the fallback) the wipe must
-  // come first: that is the client's own pre-CM-4a ordering, whose failure
-  // mode (tracker wiped, phase unchanged) is the one this codebase has
-  // already lived with, and strictly better than the inverse.
-  if (wipe && !session) await trackerState().deleteMany({});
-
-  const result = await chapters().findOneAndUpdate(
-    { _id: oid },
-    { $set: updates },
-    { returnDocument: 'after', ...opts }
-  );
-  if (!result) throw new RouteResponse(404, { error: 'NOT_FOUND', message: 'Cycle not found' });
-
-  if (wipe && session) await trackerState().deleteMany({}, opts);
-
-  return { statusCode: 200, body: result };
-}
-
 // PUT /api/chapters/:id — ST only
 //
-// CM-4a (cycle-model.md Rev 3 §7/§11a): the live-tracker slate-wipe is a
-// consequence of the phase transition, enforced HERE, in the route that
-// mutates the phase. It used to be a courtesy the admin Cycle tab extended:
-// one DELETE /api/tracker_state followed by this PUT, two unrelated requests,
-// and only that single UI path remembered to make the first. Any other caller
-// advanced the phase with no wipe, silently - the failure surfaces weeks later
-// as unexplained stale tracker state, never as an error.
+// Story tm-admin.27.1 (retired the TM Game phase writer, 2026-10-02): TM Game no longer sets a
+// Chapter's phase. TM Admin (PUT /api/chapters/:id/phase) is the only writer of `phase`,
+// `game_phase` and `status`, the mirror trio (cycle-model.md section 7). This route used to carry the
+// CM-4a / CM-5a transition, which also WIPED the whole `tracker_state` collection entering prep or
+// game from most phases. TM Admin never wipes (Angelus's ruling of 2026-08-20, after a live incident in
+// which opening Game phase destroyed stats already recorded), so two apps held opposite rules for the
+// same field. The transition and its transaction are gone; this route refuses the trio.
 //
-// WHAT THIS GUARANTEE COVERS, AND WHAT IT DOES NOT:
-//   - Covered: every caller that reaches `chapters.phase` through this
-//     API. The admin Cycle tab, the admin Data Portability importer, and any
-//     future admin surface or fixup script that uses the API.
-//     A note on the importer, because the obvious reasoning is WRONG:
-//     resetOnTransition(x, x) is false for every x EXCEPT 'game' - entering
-//     game from anywhere but prep is the legacy reset, so a same-phase round
-//     trip is NOT a no-op when that phase is 'game'. Re-importing a backup of
-//     a cycle currently in game phase would have wiped every character's live
-//     tracker, with no dialog on that path. The importer therefore strips the
-//     mirror trio (phase/game_phase/status) from its restore PUT - see
-//     withoutPhaseFields in public/js/downtime/cycle-phase.js - so it no
-//     longer reaches this branch at all. Phase is driven from the Cycle tab,
-//     which is the surface that warns the ST. (CM-4a review finding P1.)
-//   - NOT covered: a client writing to Atlas directly with its own credential.
-//     TM Cockpit holds exactly such a readwrite credential and has a script
-//     that flips this field (scripts/open-dt6-game-phase.mjs, written on Game
-//     7 night, never executed). No route can bind that path; the mitigation
-//     for that class is credential scoping in the writing repo, which is TM
-//     Cockpit's own deferred work, not something this route can do.
-// cycle-model.md §11a's "fires regardless of caller" over-reaches on that
-// third case. This route delivers the first two and says so.
+// The refusal is deliberately the FIRST statement in the handler: the handler does no id parsing, no
+// database read, no write and no tracker_state access before it, so no client (the admin Cycle tab, a
+// stale cached page, a script) can bypass it. It runs AFTER the app-level authentication and this
+// route's own ST role gate (`requireRole('st')`), so a non-ST caller gets 403, not 409 (a 403 is the
+// right answer for a caller who may not write at all), and authentication may itself read the
+// `players` collection. A body without those keys behaves exactly as before: label, story assignment,
+// session link, prep access, submission count, joint projects and deadlines all still work.
+// The Data Portability importer cannot reach this refusal for a different reason than it once could:
+// Chapter import was retired from Data Portability (a chapters CSV is rejected as an unknown
+// collection; see public/js/admin/data-portability.js), so nothing there PUTs a Chapter at all.
+// `withoutPhaseFields` (cycle-phase.js) now serves only `buildPhaseUpdate`.
 //
-// The trigger is an OWN `phase` property on the request body, deliberately -
-// never a derived-status comparison. `deriveCycleStatus` returns 'game' from
-// the legacy sign-off ladder whenever prep is signed and city is not, and
-// `signoffPhase` writes that status on every sign-off toggle, so an
-// effective-status-drift implementation would wipe every character's tracker
-// when an ST ticks a checkbox. A body without `phase` takes the original
-// generic path below, byte-identically: no read-before-write, no session, no
-// tracker_state access at all.
+// A slate reset between games is now the ST's deliberate Reset All on the Tracker tab.
+const PHASE_FIELDS = ['phase', 'game_phase', 'status'];
+
 cyclesRouter.put('/:id', requireRole('st'), async (req, res) => {
+  if (PHASE_FIELDS.some(k => Object.prototype.hasOwnProperty.call(req.body || {}, k))) {
+    return res.status(409).json({
+      error: 'PHASE_CONTROLLED_BY_TM_ADMIN',
+      message: 'Chapter phase is set in TM Admin.',
+    });
+  }
+
   const oid = parseId(req.params.id);
   if (!oid) return res.status(400).json({ error: 'VALIDATION_ERROR', message: 'Invalid cycle ID format' });
 
@@ -735,54 +654,14 @@ cyclesRouter.put('/:id', requireRole('st'), async (req, res) => {
 
   const { _id, ...updates } = req.body;
 
-  if (!Object.prototype.hasOwnProperty.call(req.body || {}, 'phase')) {
-    const result = await chapters().findOneAndUpdate(
-      { _id: oid },
-      { $set: updates },
-      { returnDocument: 'after' }
-    );
+  const result = await chapters().findOneAndUpdate(
+    { _id: oid },
+    { $set: updates },
+    { returnDocument: 'after' }
+  );
 
-    if (!result) return res.status(404).json({ error: 'NOT_FOUND', message: 'Cycle not found' });
-    return res.json(result);
-  }
-
-  // Captured OUTSIDE the callback and sent after the commit, exactly as
-  // office-seats.js's holder handover does: `withTransaction` re-runs its
-  // whole callback on any error MongoDB labels transient, so responding from
-  // inside would answer before the commit and could try to respond twice.
-  let statusCode, body;
-  const dbSession = getClient().startSession();
-  try {
-    await dbSession.withTransaction(async () => {
-      ({ statusCode, body } = await runPhaseTransition(oid, updates, dbSession));
-    });
-  } catch (err) {
-    if (err instanceof RouteResponse) {
-      statusCode = err.statusCode;
-      body = err.body;
-    } else if (isTransactionsUnsupported(err)) {
-      // Standalone local `mongod` only. Degrade to the pre-CM-4a ordering
-      // rather than break the route for local development, and say so loudly
-      // enough that nobody mistakes this for the enforced path.
-      console.warn(
-        '[cm-4a] MongoDB reports transactions unsupported (standalone mongod?). ' +
-        'Falling back to a NON-ATOMIC wipe-then-phase-write for this request. ' +
-        'Production runs against an Atlas replica set and never takes this path.'
-      );
-      try {
-        ({ statusCode, body } = await runPhaseTransition(oid, updates, null));
-      } catch (fallbackErr) {
-        if (fallbackErr instanceof RouteResponse) {
-          statusCode = fallbackErr.statusCode;
-          body = fallbackErr.body;
-        } else throw fallbackErr;
-      }
-    } else throw err;
-  } finally {
-    await dbSession.endSession();
-  }
-
-  res.status(statusCode).json(body);
+  if (!result) return res.status(404).json({ error: 'NOT_FOUND', message: 'Cycle not found' });
+  return res.json(result);
 });
 
 // DELETE /api/chapters/:id — ST only.
