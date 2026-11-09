@@ -155,7 +155,7 @@ function renderPlayerPrefs(char) {
 
 function renderXPBreakdown(char) {
   const earnedParts = {
-    starting:     xpStarting(),
+    starting:     xpStarting(char),
     humanityDrop: xpHumanityDrop(char),
     ordeals:      xpOrdeals(char),
     game:         xpGame(char),
