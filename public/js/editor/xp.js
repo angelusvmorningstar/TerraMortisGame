@@ -38,8 +38,12 @@ export function dotsToXP(numDots, baseBeforeXP, costPerDot) {
   return (numDots || 0) * costPerDot;
 }
 
-/** Starting XP awarded on character creation. */
-export function xpStarting() { return 10; }
+/** Starting XP awarded on character creation: 10, unless the character carries an
+ *  `xp_starting_override` (a second/replacement character opens on the average XP of the
+ *  other players at creation; set in TM Admin, read here so the sheet agrees with it). */
+export function xpStarting(c) {
+  return Number.isFinite(c?.xp_starting_override) ? c.xp_starting_override : 10;
+}
 
 /** XP from voluntary humanity drops: 2 per dot permanently lost. */
 export function xpHumanityDrop(c) {
@@ -81,7 +85,7 @@ export function xpPT5(c) {
  * @returns {number}
  */
 export function xpEarned(c) {
-  return xpStarting() + xpHumanityDrop(c) + xpOrdeals(c) + xpGame(c) + xpPT5(c);
+  return xpStarting(c) + xpHumanityDrop(c) + xpOrdeals(c) + xpGame(c) + xpPT5(c);
 }
 
 /** Sum XP from inline creation fields on an object (attributes, skills, disciplines). */

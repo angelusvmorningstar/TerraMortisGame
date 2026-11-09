@@ -310,7 +310,7 @@ export function serialiseForPrint(c, territories) {
     spent: xpSpent(c),
     remaining: xpLeft(c),
     breakdown: {
-      starting: xpStarting(),
+      starting: xpStarting(c),
       humanity_drops: xpHumanityDrop(c),
       ordeals: xpOrdeals(c),
       game: xpGame(c),
