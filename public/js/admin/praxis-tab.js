@@ -1243,16 +1243,20 @@ function renderPoolChip(id) {
 }
 
 /**
- * The two dots on a pool chip: crimson when this attendee has an assignment in
- * Praxis, gold when they have one in Harpy, dim otherwise. Read across BOTH
- * tallies every render, whichever one is active - the pool strip itself stays
- * scoped to the active tally, so without these an ST working Harpy has no way
- * to see that a chip is already spoken for on the Praxis side.
+ * The dots on a pool chip: ONE dot per point of the attendee's EFFECTIVE City
+ * Status (the same `statusFor` figure the Praxis tally sums; 2026-11-21 hot
+ * patch, the chips used to show a fixed pair of assignment dots that read as
+ * "2 status" for everyone). Colour carries the old assignment signal, read
+ * across BOTH tallies whichever is active: crimson when this attendee has an
+ * assignment in Praxis, else gold when they have one in Harpy, else dim. A
+ * character assigned in both shows crimson (Praxis wins the one colour).
  */
 function renderChipDots(id) {
-  const praxis = hasAssignmentIn('praxis', id) ? ' on-praxis' : '';
-  const harpy = hasAssignmentIn('harpy', id) ? ' on-harpy' : '';
-  return `<span class="chip-dots" aria-hidden="true"><span class="chip-dot${praxis}"></span><span class="chip-dot${harpy}"></span></span>`;
+  const n = Math.max(0, Math.min(10, statusFor(id)));
+  const cls = hasAssignmentIn('praxis', id) ? ' on-praxis'
+    : hasAssignmentIn('harpy', id) ? ' on-harpy' : '';
+  const dots = `<span class="chip-dot${cls}"></span>`.repeat(n);
+  return `<span class="chip-dots" role="img" aria-label="City Status ${n}" title="City Status ${n}">${dots}</span>`;
 }
 
 /**
