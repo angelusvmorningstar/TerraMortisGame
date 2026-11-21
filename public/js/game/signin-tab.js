@@ -56,6 +56,9 @@ let _el = null;
 let _playerByCharId = new Map();
 let _infSpentByCharId = new Map();
 let _feedVitaeByCharId = new Map();
+// Live tracker_state per character (vitae, willpower, influence). The check-in shows these when
+// present, because the old feeding_vitae_* fields below are not written for current-format cycles.
+let _trackerByCharId = new Map();
 
 // Placeholder strings seeded by an early redacted import. Treat as missing.
 const PLACEHOLDER_RE = /^Player [A-Z]{1,2}$/;
@@ -121,6 +124,17 @@ async function loadLastCycleData() {
   }
 }
 
+async function loadTrackers() {
+  _trackerByCharId = new Map();
+  const results = await Promise.all((_chars || []).map(async (c) => {
+    try { return [String(c._id), await apiGet('/api/tracker_state/' + c._id)]; }
+    catch { return [String(c._id), null]; }
+  }));
+  for (const [id, t] of results) if (t && typeof t === 'object') _trackerByCharId.set(id, t);
+}
+
+const finiteOr = (v, fallback) => (typeof v === 'number' && Number.isFinite(v) ? v : fallback);
+
 export async function initSignIn(el, chars) {
   _el = el;
   _chars = chars || [];
@@ -140,7 +154,7 @@ export async function initSignIn(el, chars) {
     return;
   }
 
-  await Promise.all([loadPlayerNames(), loadLastCycleData()]);
+  await Promise.all([loadPlayerNames(), loadLastCycleData(), loadTrackers()]);
   render();
 }
 
@@ -166,7 +180,7 @@ async function handleNewSession() {
   });
   _session = created;
   _sessions.unshift(created);
-  await Promise.all([loadPlayerNames(), loadLastCycleData()]);
+  await Promise.all([loadPlayerNames(), loadLastCycleData(), loadTrackers()]);
   render();
 }
 
@@ -255,12 +269,14 @@ function render() {
     const wpMax = calcWillpowerMax(c);
     const infMax = calcTotalInfluence(c);
     const infSpent = _infSpentByCharId.get(String(c._id)) || 0;
-    const infRemaining = Math.max(0, infMax - infSpent);
+    const tracker = _trackerByCharId.get(String(c._id)) || null;
+    const infRemaining = finiteOr(tracker?.influence, Math.max(0, infMax - infSpent));
     const feedVitae = _feedVitaeByCharId.get(String(c._id)) ?? 0;
-    const vitaeShown = Math.min(feedVitae, vMax);
+    const vitaeShown = finiteOr(tracker?.vitae, Math.min(feedVitae, vMax));
+    const wpShown = finiteOr(tracker?.willpower, wpMax);
     const resourceRow = `<div class="si-resources">
       <span class="si-res-item"><span class="si-res-lbl">V</span> ${vitaeShown}/${vMax}</span>
-      <span class="si-res-item"><span class="si-res-lbl">WP</span> ${wpMax}/${wpMax}</span>
+      <span class="si-res-item"><span class="si-res-lbl">WP</span> ${wpShown}/${wpMax}</span>
       ${infMax > 0 ? `<span class="si-res-item"><span class="si-res-lbl">Inf</span> ${infRemaining}/${infMax}</span>` : ''}
     </div>`;
 
