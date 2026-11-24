@@ -4,7 +4,7 @@
  */
 
 import { apiGet, apiPost, apiPut, apiPatch } from '../data/api.js';
-import { esc, parseOutcomeSections, displayName, clanIcon, covIcon } from '../data/helpers.js';
+import { esc, parseOutcomeSections, renderOutcomeBody, displayName, clanIcon, covIcon } from '../data/helpers.js';
 import { isSTRole, getPlayerInfo } from '../auth/discord.js';
 
 // compilePushOutcome from '../admin/downtime-story.js' is NOT imported statically.
@@ -575,8 +575,7 @@ export function renderOutcomeWithCards(sub, opts = {}) {
       if (isMech) {
         h += `<pre class="story-pre">${esc(body)}</pre>`;
       } else {
-        const paras = body.split(/\n/).filter(Boolean);
-        h += paras.map(p => `<p>${esc(p)}</p>`).join('');
+        h += renderOutcomeBody(body, esc);
       }
       h += '</div></div>';
 
@@ -587,8 +586,7 @@ export function renderOutcomeWithCards(sub, opts = {}) {
       }
     } else {
       const body = sec.lines.join('\n').trim();
-      const paras = body.split(/\n/).filter(Boolean);
-      h += paras.map(p => `<p>${esc(p)}</p>`).join('');
+      h += renderOutcomeBody(body, esc);
     }
   }
   h += '</div>';

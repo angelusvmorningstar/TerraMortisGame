@@ -329,3 +329,70 @@ export function parseOutcomeSections(text) {
   if (!sections.length) return [{ heading: null, lines: text.split('\n') }];
   return sections;
 }
+
+// ---------------------------------------------------------------------------------------------
+// Story tm-admin.36.6 (AC 5, second half): the lines INSIDE a parsed outcome section.
+//
+// DELIBERATE COPY of TM Story's `parseOutcomeBlocks` / `renderInline` / `renderOutcomeBody`
+// (../TM Story/public/js/downtimes/archive-format.js). The two apps share no importable module,
+// and both render the same ST-authored `published_outcome` text, so the two copies MUST STAY IN
+// STEP. Drift is caught by the shared fixture in server/tests/outcome-blocks-shared-fixture.test.js,
+// which mirrors TM Story's archive-format.test.js cases. Change one, change the other.
+//
+// `parseOutcomeSections` above is unchanged (it splits on `## ` only). Each body line here is a
+// subheading (`###` or deeper, hashes stripped), part of a `- ` / `* ` list, or ordinary text.
+const SUBHEADING_RE = /^\s{0,3}#{3,}(?:\s+(.*?))?\s*#*\s*$/;
+const LIST_ITEM_RE = /^\s{0,3}[-*]\s+(\S.*)$/;
+
+export function parseOutcomeBlocks(lines) {
+  const raw = Array.isArray(lines) ? lines : String(lines ?? '').split('\n');
+  const blocks = [];
+  for (const rawLine of raw) {
+    const line = String(rawLine).replace(/\r$/, '');
+    const sub = SUBHEADING_RE.exec(line);
+    if (sub) {
+      if (sub[1]) blocks.push({ type: 'subheading', text: sub[1].trim() });
+      continue;
+    }
+    const item = LIST_ITEM_RE.exec(line);
+    if (item) {
+      const last = blocks[blocks.length - 1];
+      if (last && last.type === 'list') last.items.push(item[1]);
+      else blocks.push({ type: 'list', items: [item[1]] });
+      continue;
+    }
+    const last = blocks[blocks.length - 1];
+    if (line.trim() === '') {
+      blocks.push({ type: 'blank' });
+    } else if (last && last.type === 'text') {
+      last.lines.push(line);
+    } else {
+      blocks.push({ type: 'text', lines: [line] });
+    }
+  }
+  return blocks;
+}
+
+// `**bold**` only. Every segment, bold or not, goes through escFn.
+export function renderInline(text, escFn) {
+  return String(text).split(/(\*\*[^*]+?\*\*)/).map((seg) => {
+    const m = /^\*\*([^*]+?)\*\*$/.exec(seg);
+    return m ? `<strong>${escFn(m[1])}</strong>` : escFn(seg);
+  }).join('');
+}
+
+// mode 'lines': each ordinary line is its own paragraph (the story tab's existing behaviour).
+// mode 'blocks': ordinary lines run together until a blank line, in one paragraph.
+export function renderOutcomeBody(lines, escFn, { mode = 'lines', paragraphClass = '' } = {}) {
+  const cls = paragraphClass ? ` class="${paragraphClass}"` : '';
+  const p = (inner) => `<p${cls}>${inner}</p>`;
+  return parseOutcomeBlocks(lines).map((b) => {
+    if (b.type === 'subheading') return `<h6 class="dt-narrative__subheading">${renderInline(b.text, escFn)}</h6>`;
+    if (b.type === 'list') return `<ul class="dt-narrative__list">${b.items.map((i) => `<li>${renderInline(i, escFn)}</li>`).join('')}</ul>`;
+    if (b.type === 'text') {
+      if (mode === 'blocks') return p(renderInline(b.lines.join('\n').trim(), escFn));
+      return b.lines.filter((l) => l.trim() !== '').map((l) => p(renderInline(l, escFn))).join('');
+    }
+    return '';
+  }).join('');
+}
